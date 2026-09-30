@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A superseded push should not keep a runner busy finishing work nobody
+# is waiting for any more.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      # Type-checks the sources without emitting, so a type error fails
+      # here rather than inside the bundler's output.
+      - run: npm run check
+
+      # ssh and ssh-keygen are this suite's oracles, not conveniences:
+      # the key encoding and the generated ssh_config are both checked
+      # against what OpenSSH itself makes of them. Confirm they exist
+      # before running, so their absence reads as a missing dependency
+      # rather than a mysterious test failure.
+      - name: Check the OpenSSH oracles are present
+        run: |
+          ssh -V
+          ssh-keygen -? 2>&1 | head -1 || true
+
+      - run: npm test
+
+      # The bundle is what actually ships, and it can break while the
+      # type-check passes -- an import that resolves for tsc but not for
+      # esbuild, for instance.
+      - run: npm run bundle
