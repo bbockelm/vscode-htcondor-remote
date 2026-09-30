@@ -129,3 +129,37 @@ test("an empty response body is not an error", async () => {
 	const seen: Seen = {};
 	await recordingApi(seen, 204, "").holdJob("12.0");
 });
+
+test("peek tails from the end on a first call", async () => {
+	const seen: Seen = {};
+	const api = recordingApi(seen, 200, JSON.stringify({ stdout: { text: "hello\n", offset: 6 } }));
+	const result = await api.peek("12.0");
+
+	const url = new URL(seen.url ?? "");
+	assert.ok(url.pathname.endsWith("/api/v1/jobs/12.0/peek"), url.pathname);
+	assert.equal(url.searchParams.get("stdout_offset"), "-1", "a first call must tail, not replay the file");
+	assert.equal(result.stdout, "hello\n");
+	assert.equal(result.offsets.stdout, 6);
+});
+
+test("the returned offsets are the ones to send next", async () => {
+	const seen: Seen = {};
+	const api = recordingApi(
+		seen,
+		200,
+		JSON.stringify({ stdout: { text: "more", offset: 40 }, stderr: { text: "err", offset: 3 } })
+	);
+	const result = await api.peek("12.0", { stdout: 34, stderr: 0 });
+	assert.equal(new URL(seen.url ?? "").searchParams.get("stdout_offset"), "34");
+	assert.deepEqual(result.offsets, { stdout: 40, stderr: 3 });
+});
+
+// A poll that returns nothing must not rewind the stream: sending -1
+// again would re-tail and show the same bytes over and over.
+test("a poll with no new output keeps its place", async () => {
+	const seen: Seen = {};
+	const api = recordingApi(seen, 200, JSON.stringify({}));
+	const result = await api.peek("12.0", { stdout: 100, stderr: 5 });
+	assert.deepEqual(result.offsets, { stdout: 100, stderr: 5 });
+	assert.equal(result.stdout, "");
+});

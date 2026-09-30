@@ -13,6 +13,7 @@ import { AUTH_PROVIDER_ID, HTCondorAuthProvider } from "./auth";
 import { CertificateManager, CHECK_INTERVAL_MS, KeyStore } from "./certificate";
 import { JobNode } from "./jobsModel";
 import { JobsProvider } from "./jobsView";
+import { JobLogs } from "./logsView";
 import { HostSpec, writeSSHConfig } from "./sshconfig";
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -56,7 +57,14 @@ export function activate(context: vscode.ExtensionContext): void {
 	context.subscriptions.push({ dispose: () => clearInterval(renewal) });
 
 	const jobs = new JobsProvider(api, output);
+	const logs = new JobLogs(api, output);
 	context.subscriptions.push(
+		logs,
+		vscode.commands.registerCommand("htcondor.showLogs", (node?: JobNode) => {
+			if (node?.kind === "job") {
+				logs.show(jobId(node.job));
+			}
+		}),
 		vscode.window.registerTreeDataProvider("htcondor.jobs", jobs),
 		vscode.commands.registerCommand("htcondor.refreshJobs", () => jobs.refresh()),
 		vscode.commands.registerCommand("htcondor.signIn", async () => {

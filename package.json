@@ -71,6 +71,11 @@
       {
         "command": "htcondor.removeJob",
         "title": "Remove Job"
+      },
+      {
+        "command": "htcondor.showLogs",
+        "title": "Follow Output",
+        "icon": "$(output)"
       }
     ],
     "authentication": [
@@ -115,6 +120,11 @@
           "command": "htcondor.removeJob",
           "when": "view == htcondor.jobs && viewItem == htcondor.job",
           "group": "9_danger"
+        },
+        {
+          "command": "htcondor.showLogs",
+          "when": "view == htcondor.jobs && viewItem == htcondor.job",
+          "group": "inline"
         }
       ]
     }

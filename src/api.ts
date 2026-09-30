@@ -136,6 +136,39 @@ export class HTCondorApi {
 		return jobs;
 	}
 
+	/**
+	 * Read the end of a running job's output, from the execute node.
+	 *
+	 * Offsets are the server's, passed back on the next call so each
+	 * poll returns only what is new. -1 means "tail from the end",
+	 * which is what a first call wants.
+	 */
+	async peek(id: string, offsets: PeekOffsets = {}): Promise<PeekResult> {
+		const params = new URLSearchParams({
+			stdout_offset: String(offsets.stdout ?? -1),
+			stderr_offset: String(offsets.stderr ?? -1),
+		});
+		if (offsets.maxBytes) {
+			params.set("max_bytes", String(offsets.maxBytes));
+		}
+		const body = await this.request<{
+			stdout?: { text: string; offset: number };
+			stderr?: { text: string; offset: number };
+		}>("GET", `/api/v1/jobs/${encodeURIComponent(id)}/peek?${params.toString()}`);
+
+		return {
+			stdout: body.stdout?.text ?? "",
+			stderr: body.stderr?.text ?? "",
+			// The old offset is kept when the server returns none, so a
+			// poll that answered nothing does not rewind the stream to
+			// the beginning on the next call.
+			offsets: {
+				stdout: body.stdout?.offset ?? offsets.stdout ?? -1,
+				stderr: body.stderr?.offset ?? offsets.stderr ?? -1,
+			},
+		};
+	}
+
 	/** Hold a job, with an optional reason the schedd records. */
 	async holdJob(id: string, reason?: string): Promise<void> {
 		await this.request<unknown>("POST", `/api/v1/jobs/${encodeURIComponent(id)}/hold`, {
@@ -324,4 +357,17 @@ function numberOf(value: unknown): number | undefined {
 
 function stringOf(value: unknown): string | undefined {
 	return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+export interface PeekOffsets {
+	stdout?: number;
+	stderr?: number;
+	maxBytes?: number;
+}
+
+export interface PeekResult {
+	stdout: string;
+	stderr: string;
+	/** Pass these back on the next call to get only what is new. */
+	offsets: { stdout: number; stderr: number };
 }
