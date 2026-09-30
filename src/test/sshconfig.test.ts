@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
-import { renderConfig, writeSSHConfig } from "../sshconfig";
+import { Identity, renderConfig, writeSSHConfig } from "../sshconfig";
 
 let dir: string;
 beforeEach(() => {
@@ -14,6 +14,12 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 const CA_LINE = "@cert-authority ap.example.edu,[ap.example.edu]:* ssh-ed25519 AAAAC3Nz";
+
+/** Paths only; nothing here reads the files. */
+const IDENTITY: Identity = {
+	privateKey: "/tmp/htcondor/id_ecdsa",
+	certificate: "/tmp/htcondor/id_ecdsa-cert.pub",
+};
 
 /**
  * What `ssh` itself makes of our config.
@@ -36,22 +42,26 @@ function effectiveConfig(configFile: string, alias: string): Map<string, string>
 	return settings;
 }
 
-test("ssh resolves our host to the relay", async () => {
+test("ssh resolves our host to the gateway", async () => {
 	const paths = await writeSSHConfig(
 		dir,
-		[{ alias: "condor-12345.0", port: 54321, target: "12345.0", gatewayName: "ap.example.edu" }],
-		CA_LINE
+		[{ alias: "condor-12345.0", gatewayHost: "ap.example.edu", gatewayPort: 22, target: "12345.0" }],
+		CA_LINE,
+		IDENTITY
 	);
 
 	const cfg = effectiveConfig(paths.configFile, "condor-12345.0");
-	assert.equal(cfg.get("hostname"), "127.0.0.1");
-	assert.equal(cfg.get("port"), "54321");
+	assert.equal(cfg.get("hostname"), "ap.example.edu");
+	assert.equal(cfg.get("port"), "22");
 	assert.equal(cfg.get("user"), "12345.0");
-	assert.equal(cfg.get("hostkeyalias"), "ap.example.edu");
-	// ssh -G normalises yes/no to true/false, which is worth asserting
-	// against rather than guessing: the point is what ssh concluded,
-	// not what we wrote.
-	assert.equal(cfg.get("pubkeyauthentication"), "false");
+	
+	// The certificate is the credential, so pubkey auth stays on and
+	// the identity is ours alone.
+	// "yes", not "true": ssh -G normalises per keyword, not globally --
+	// stricthostkeychecking comes back "true" two lines below.
+	assert.equal(cfg.get("identitiesonly"), "yes");
+	assert.ok((cfg.get("identityfile") ?? "").includes("id_ecdsa"), "our key is not offered");
+	assert.ok((cfg.get("certificatefile") ?? "").includes("cert.pub"), "our certificate is not offered");
 	assert.equal(cfg.get("stricthostkeychecking"), "true");
 });
 
@@ -63,8 +73,9 @@ test("ssh resolves our host to the relay", async () => {
 test("the known_hosts file ssh uses is the one we wrote", async () => {
 	const paths = await writeSSHConfig(
 		dir,
-		[{ alias: "condor-work", port: 40000, target: "+work", gatewayName: "ap.example.edu" }],
-		CA_LINE
+		[{ alias: "condor-work", gatewayHost: "ap.example.edu", gatewayPort: 22, target: "+work" }],
+		CA_LINE,
+		IDENTITY
 	);
 
 	const cfg = effectiveConfig(paths.configFile, "condor-work");
@@ -81,8 +92,9 @@ test("the known_hosts file ssh uses is the one we wrote", async () => {
 // override the settings that make these hosts work.
 test("our settings win over the user's own config", async () => {
 	const text = renderConfig(
-		[{ alias: "condor-a", port: 1234, target: "1.0" }],
-		join(dir, "known_hosts")
+		[{ alias: "condor-a", gatewayHost: "ap.example.edu", gatewayPort: 1234, target: "1.0" }],
+		join(dir, "known_hosts"),
+		IDENTITY
 	);
 	const ourBlock = text.indexOf("Host condor-a");
 	const include = text.indexOf("Include ");
@@ -94,7 +106,7 @@ test("our settings win over the user's own config", async () => {
 // installed under replaces their config for every Remote-SSH host, not
 // just ours.
 test("a host we did not write still resolves through the include", async () => {
-	const paths = await writeSSHConfig(dir, [{ alias: "condor-a", port: 1234, target: "1.0" }], CA_LINE);
+	const paths = await writeSSHConfig(dir, [{ alias: "condor-a", gatewayHost: "ap.example.edu", gatewayPort: 1234, target: "1.0" }], CA_LINE, IDENTITY);
 	const cfg = effectiveConfig(paths.configFile, "somewhere.else.example");
 	assert.equal(cfg.get("hostname"), "somewhere.else.example");
 	// Ours must not have leaked onto it.
@@ -102,7 +114,7 @@ test("a host we did not write still resolves through the include", async () => {
 });
 
 test("an empty target names the default session, not the local user", async () => {
-	const paths = await writeSSHConfig(dir, [{ alias: "condor-default", port: 2222, target: "  " }], CA_LINE);
+	const paths = await writeSSHConfig(dir, [{ alias: "condor-default", gatewayHost: "ap.example.edu", gatewayPort: 2222, target: "  " }], CA_LINE, IDENTITY);
 	const cfg = effectiveConfig(paths.configFile, "condor-default");
 	assert.equal(cfg.get("user"), "default");
 });
@@ -111,7 +123,7 @@ test("an empty target names the default session, not the local user", async () =
 // one, so an unquoted path is read as two arguments.
 test("paths with spaces survive", async () => {
 	const spaced = join(dir, "Jo Smith", "storage");
-	const paths = await writeSSHConfig(spaced, [{ alias: "condor-a", port: 1234, target: "1.0" }], CA_LINE);
+	const paths = await writeSSHConfig(spaced, [{ alias: "condor-a", gatewayHost: "ap.example.edu", gatewayPort: 1234, target: "1.0" }], CA_LINE, IDENTITY);
 
 	// Asserted on the text, not through `ssh -G`, because -G cannot
 	// tell the two cases apart. UserKnownHostsFile takes a LIST, so an
@@ -133,17 +145,18 @@ test("several hosts coexist", async () => {
 	const paths = await writeSSHConfig(
 		dir,
 		[
-			{ alias: "condor-1.0", port: 5000, target: "1.0" },
-			{ alias: "condor-2.0", port: 5000, target: "2.0" },
+			{ alias: "condor-1.0", gatewayHost: "ap.example.edu", gatewayPort: 5000, target: "1.0" },
+			{ alias: "condor-2.0", gatewayHost: "ap.example.edu", gatewayPort: 5000, target: "2.0" },
 		],
-		CA_LINE
+		CA_LINE,
+		IDENTITY
 	);
 	assert.equal(effectiveConfig(paths.configFile, "condor-1.0").get("user"), "1.0");
 	assert.equal(effectiveConfig(paths.configFile, "condor-2.0").get("user"), "2.0");
 });
 
 test("the files are not readable by anyone else", async () => {
-	const paths = await writeSSHConfig(dir, [{ alias: "condor-a", port: 1234, target: "1.0" }], CA_LINE);
+	const paths = await writeSSHConfig(dir, [{ alias: "condor-a", gatewayHost: "ap.example.edu", gatewayPort: 1234, target: "1.0" }], CA_LINE, IDENTITY);
 	for (const file of [paths.configFile, paths.knownHosts]) {
 		assert.equal(statSync(file).mode & 0o077, 0, `${file} is readable by others`);
 	}

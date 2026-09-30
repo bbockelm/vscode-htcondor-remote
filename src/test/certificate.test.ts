@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { HTCondorApi } from "../api";
-import { CertificateManager, KeyStore } from "../certificate";
+import { CertificateManager, KeyStore, LIFETIME_SECONDS } from "../certificate";
 
 let dir: string;
 
@@ -30,6 +30,8 @@ interface Calls {
 	ca: number;
 	sign: number;
 	signedKeys: string[];
+	/** The lifetime asked for on each signing request, if any. */
+	lifetimes: Array<number | undefined>;
 }
 
 function fakeApi(calls: Calls, validBefore: () => Date): HTCondorApi {
@@ -45,8 +47,12 @@ function fakeApi(calls: Calls, validBefore: () => Date): HTCondorApi {
 		}
 		if (url.endsWith("/api/v1/ssh/certificate")) {
 			calls.sign++;
-			const body = JSON.parse(String(init?.body)) as { public_key: string };
+			const body = JSON.parse(String(init?.body)) as {
+				public_key: string;
+				lifetime_seconds?: number;
+			};
 			calls.signedKeys.push(body.public_key);
+			calls.lifetimes.push(body.lifetime_seconds);
 			return jsonResponse({
 				certificate: `ecdsa-sha2-nistp256-cert-v01@openssh.com SIGNED${calls.sign}`,
 				principal: "bbockelm",
@@ -67,8 +73,8 @@ function jsonResponse(body: unknown): Response {
 }
 
 test("writes a key, a certificate and a known_hosts ssh can use", async () => {
-	const calls: Calls = { ca: 0, sign: 0, signedKeys: [] };
-	const expiry = new Date(Date.now() + 12 * 3600 * 1000);
+	const calls: Calls = { ca: 0, sign: 0, signedKeys: [], lifetimes: [] };
+	const expiry = new Date(Date.now() + LIFETIME_SECONDS * 1000);
 	const mgr = new CertificateManager(fakeApi(calls, () => expiry), new MemoryKeyStore(), dir);
 
 	const paths = await mgr.ensure();
@@ -87,8 +93,8 @@ test("writes a key, a certificate and a known_hosts ssh can use", async () => {
 });
 
 test("a second call does nothing while the certificate is good", async () => {
-	const calls: Calls = { ca: 0, sign: 0, signedKeys: [] };
-	const expiry = new Date(Date.now() + 12 * 3600 * 1000);
+	const calls: Calls = { ca: 0, sign: 0, signedKeys: [], lifetimes: [] };
+	const expiry = new Date(Date.now() + LIFETIME_SECONDS * 1000);
 	const mgr = new CertificateManager(fakeApi(calls, () => expiry), new MemoryKeyStore(), dir);
 
 	await mgr.ensure();
@@ -98,12 +104,12 @@ test("a second call does nothing while the certificate is good", async () => {
 	assert.equal(calls.sign, 1, "asked the server to sign again while holding a valid certificate");
 });
 
-test("renews inside the last hour, and reuses the same key when it does", async () => {
-	const calls: Calls = { ca: 0, sign: 0, signedKeys: [] };
+test("renews inside the renewal window, and reuses the same key when it does", async () => {
+	const calls: Calls = { ca: 0, sign: 0, signedKeys: [], lifetimes: [] };
 	const issued = new Date("2026-09-30T12:00:00Z");
 	let now = issued;
 	const mgr = new CertificateManager(
-		fakeApi(calls, () => new Date(now.getTime() + 12 * 3600 * 1000)),
+		fakeApi(calls, () => new Date(now.getTime() + LIFETIME_SECONDS * 1000)),
 		new MemoryKeyStore(),
 		dir,
 		() => now
@@ -112,10 +118,10 @@ test("renews inside the last hour, and reuses the same key when it does", async 
 	await mgr.ensure();
 	assert.equal(calls.sign, 1);
 
-	// 11 hours on: 1 hour left, which is the renewal window exactly.
-	now = new Date(issued.getTime() + 11 * 3600 * 1000);
+	// Far enough in that less than a third of the life remains.
+	now = new Date(issued.getTime() + Math.ceil((LIFETIME_SECONDS * 0.8) * 1000));
 	await mgr.ensure();
-	assert.equal(calls.sign, 2, "did not renew with an hour left");
+	assert.equal(calls.sign, 2, "did not renew inside the renewal window");
 
 	// The certificate rotates; the key underneath it does not.
 	assert.equal(calls.signedKeys.length, 2);
@@ -123,18 +129,18 @@ test("renews inside the last hour, and reuses the same key when it does", async 
 });
 
 test("an expired certificate is replaced rather than used", async () => {
-	const calls: Calls = { ca: 0, sign: 0, signedKeys: [] };
+	const calls: Calls = { ca: 0, sign: 0, signedKeys: [], lifetimes: [] };
 	const issued = new Date("2026-09-30T12:00:00Z");
 	let now = issued;
 	const mgr = new CertificateManager(
-		fakeApi(calls, () => new Date(now.getTime() + 12 * 3600 * 1000)),
+		fakeApi(calls, () => new Date(now.getTime() + LIFETIME_SECONDS * 1000)),
 		new MemoryKeyStore(),
 		dir,
 		() => now
 	);
 
 	await mgr.ensure();
-	now = new Date(issued.getTime() + 13 * 3600 * 1000);
+	now = new Date(issued.getTime() + (LIFETIME_SECONDS + 60) * 1000);
 	await mgr.ensure();
 
 	assert.equal(calls.sign, 2, "kept using a certificate that had already expired");
@@ -156,8 +162,8 @@ test("narrows the mode of a key file that already existed", async () => {
 	// key left over from an older version -- or dropped there by
 	// anything else -- would keep its permissions through every
 	// renewal, and ssh would refuse to use it.
-	const calls: Calls = { ca: 0, sign: 0, signedKeys: [] };
-	const expiry = new Date(Date.now() + 12 * 3600 * 1000);
+	const calls: Calls = { ca: 0, sign: 0, signedKeys: [], lifetimes: [] };
+	const expiry = new Date(Date.now() + LIFETIME_SECONDS * 1000);
 	const mgr = new CertificateManager(fakeApi(calls, () => expiry), new MemoryKeyStore(), dir);
 
 	mkdirSync(dir, { recursive: true });
@@ -167,4 +173,25 @@ test("narrows the mode of a key file that already existed", async () => {
 	await mgr.ensure();
 
 	assert.equal(statSync(mgr.paths.privateKey).mode & 0o077, 0, "left the existing key world-readable");
+});
+
+// The security argument for keeping a certificate on disk at all.
+//
+// The gateway has no revocation -- no CRL, no OCSP, no list to add a
+// stolen key to -- so the lifetime is the only control over a
+// certificate somebody copies. Accepting the server's twelve-hour
+// default would put a twelve-hour credential in a file; asking for
+// minutes costs nothing, because the server clamps only upwards.
+test("asks for a short lifetime rather than taking the default", async () => {
+	const calls: Calls = { ca: 0, sign: 0, signedKeys: [], lifetimes: [] };
+	const mgr = new CertificateManager(
+		fakeApi(calls, () => new Date(Date.now() + LIFETIME_SECONDS * 1000)),
+		new MemoryKeyStore(),
+		dir
+	);
+
+	await mgr.ensure();
+
+	assert.deepEqual(calls.lifetimes, [LIFETIME_SECONDS], "the request did not carry our lifetime");
+	assert.ok(LIFETIME_SECONDS <= 30 * 60, `${LIFETIME_SECONDS}s is not short`);
 });

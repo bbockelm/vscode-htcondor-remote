@@ -9,6 +9,18 @@
 //
 // A certificate moves that prompt to where it belongs -- VS Code's own
 // sign-in UI, once -- and every connection after it is silent.
+//
+// The certificates are SHORT-LIVED and continuously renewed, which is
+// the whole reason this approach is defensible. The gateway has no
+// revocation: no CRL, no OCSP, no list to add a stolen key to. A
+// twelve-hour certificate is therefore a twelve-hour credential sitting
+// in a file, and its lifetime is the only control over it. At fifteen
+// minutes the lifetime IS the revocation, and what is on disk is worth
+// little more than the minutes left on it.
+//
+// `lifetime_seconds` is honoured by the server for any positive value
+// and clamped only at the top, so asking for less costs nothing and
+// needs no server change.
 
 import { createPublicKey } from "node:crypto";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
@@ -36,16 +48,36 @@ const PRIVATE_KEY_SECRET = "htcondor.ssh.privateKey";
 const KEY_COMMENT = "vscode-htcondor-remote";
 
 /**
+ * How long a certificate is asked to last.
+ *
+ * Fifteen minutes. Short enough that a copy taken off disk is worth
+ * little, long enough that renewing it is not a conversation with the
+ * server every few seconds. The server clamps only upwards, so this is
+ * honoured exactly.
+ */
+export const LIFETIME_SECONDS = 15 * 60;
+
+/**
  * How long before expiry a certificate is replaced.
  *
- * An hour, against a 12-hour certificate. The window has to cover a
- * laptop that was asleep and a connection that outlives the credential
- * it was opened with: ssh reads these files when it connects, so a
- * certificate that expires mid-session does not break the session, only
- * the next reconnect -- which is exactly when the user is least willing
- * to deal with it.
+ * A third of its life. ssh reads these files when it connects, so a
+ * certificate that lapses mid-session does not break the session -- it
+ * breaks the next RECONNECT, which is when the user is least willing to
+ * deal with it, and Remote-SSH reconnects on its own.
+ *
+ * A third rather than a half because the renewal that matters most is
+ * the one after a laptop wakes up: nothing fires while it sleeps, so
+ * the margin has to survive a timer that is late rather than punctual.
  */
-const RENEW_BEFORE_MS = 60 * 60 * 1000;
+const RENEW_BEFORE_MS = Math.floor((LIFETIME_SECONDS / 3) * 1000);
+
+/**
+ * How often to check, for a caller driving this on a timer.
+ *
+ * Shorter than the renewal window, so an ordinary tick is early rather
+ * than exactly on time.
+ */
+export const CHECK_INTERVAL_MS = Math.floor((LIFETIME_SECONDS / 6) * 1000);
 
 export class CertificateManager {
 	private validBefore: Date | undefined;
@@ -100,7 +132,7 @@ export class CertificateManager {
 
 		const [ca, cert] = await Promise.all([
 			this.api.certificateAuthority(),
-			this.api.signCertificate(publicKeyLine),
+			this.api.signCertificate(publicKeyLine, LIFETIME_SECONDS),
 		]);
 
 		// chmod as well as the mode argument, because writeFile applies

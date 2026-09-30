@@ -13,14 +13,13 @@
   ],
   "main": "./out/extension.js",
   "scripts": {
-    "compile": "tsc -p .",
+    "compile": "rm -rf out && tsc -p .",
     "watch": "tsc -p . -w",
     "test": "npm run compile && node --test --test-force-exit out/test/*.test.js"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.90.0",
-    "@types/ws": "^8.18.2",
     "typescript": "^5.6.0"
   },
   "contributes": {
@@ -34,8 +33,5 @@
         }
       }
     }
-  },
-  "dependencies": {
-    "ws": "^8.22.0"
   }
 }
