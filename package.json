@@ -5,17 +5,22 @@
   "version": "0.0.1",
   "publisher": "htcondor",
   "license": "Apache-2.0",
-  "engines": { "vscode": "^1.90.0" },
-  "categories": ["Other"],
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
   "main": "./out/extension.js",
   "scripts": {
     "compile": "tsc -p .",
     "watch": "tsc -p . -w",
-    "test": "npm run compile && node --test out/test/*.test.js"
+    "test": "npm run compile && node --test --test-force-exit out/test/*.test.js"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.90.0",
+    "@types/ws": "^8.18.2",
     "typescript": "^5.6.0"
   },
   "contributes": {
@@ -29,5 +34,8 @@
         }
       }
     }
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
   }
 }

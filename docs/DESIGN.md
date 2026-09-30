@@ -360,35 +360,57 @@ Remote-SSH's ssh process*, which a user sees only by opening the Output panel an
 picking the right channel. The first tester had to fish the URL out by hand. A
 login you have to go looking for is not a login.
 
-So the ordering inverts. **The certificate is the primary path and the device
-flow through ssh is the fallback**, which is the reverse of what this document
-said before the test.
+So the prompt has to move, and the question is what replaces it as the
+credential. Two answers were built, in this order, and the second is the one the
+extension uses.
 
-The extension already has to be an `AuthenticationProvider`, and that is where a
-login prompt belongs: VS Code's own account UI, a browser opened by
-`vscode.env.openExternal`, progress in a notification. Having authenticated
-there, the extension holds a token, so it can:
+##### The certificate (built, and now the fallback)
 
-1. generate a keypair in its own storage (never `~/.ssh`),
-2. `POST /api/v1/ssh/certificate`, hold the certificate in `SecretStorage`,
-3. renew it before it expires — 12 hours by default, 24 maximum, because the
-   gateway has no revocation,
-4. and connect with no prompt at all, ever.
+The extension holds its own keypair, `POST`s the public half to
+`/api/v1/ssh/certificate`, keeps the certificate in extension storage and renews
+it an hour before expiry. `ssh` then connects with no prompt.
 
-The user sees a normal VS Code sign-in and then a window that opens. They never
-meet SSH.
+It works against the gateway exactly as shipped, which is why it exists and why
+it stays: every deployment that has not taken the relay yet is reachable this
+way. What is wrong with it is what a certificate *is* — a bearer credential
+sitting in a file, valid for twelve hours, with **no revocation**. The gateway's
+own documentation says the lifetime is the only control.
 
-**Pointing Remote-SSH at that certificate** without touching `~/.ssh/config`,
-which is the user's file and not ours. Two candidates, in order:
+##### The relay (golang-htcondor #540, and the path taken)
+
+`GET /api/v1/ssh/relay` carries SSH over a WebSocket the bearer token has already
+authenticated, so the SSH layer beneath asks for no credential at all. The
+extension listens on `127.0.0.1:<ephemeral>`, attaches the token to each outbound
+connection, and points `ssh` at that port.
+
+The credential becomes the OAuth2 token and nothing else. It lives in
+`SecretStorage`, it is revocable, and it never touches the filesystem. Closing
+the editor ends the authority.
+
+The extension is **not** an SSH server in this design, which is the distinction
+that killed an earlier draft. It never reads the bytes, holds no host key and
+terminates nothing; the gateway is still the SSH endpoint and still presents its
+own host certificate, so `ssh` verifies the real server through the hop exactly
+as it would without it.
+
+That host certificate is the other half of #540, and it was a bug: the gateway
+published `@cert-authority * <ca>` while presenting a *bare* host key, so the
+line it told clients to install verified nothing, and a user following the
+documented setup still met an unverified-host prompt. Under Remote-SSH that reads
+as a hang.
+
+##### Pointing Remote-SSH at the loopback port
+
+Without touching `~/.ssh/config`, which is the user's file and not ours. Two
+candidates, in order:
 
 - `remote.SSH.configFile` — an alternate config file. The extension writes one
-  into its storage with a `Host` block naming our gateway, our `IdentityFile` and
-  our `CertificateFile`. Cleanest if it works, with one catch: the setting
-  replaces the user's config for *every* Remote-SSH host, so ours must begin with
-  `Include ~/.ssh/config` or we break their other hosts.
-- `remote.SSH.path` — a wrapper script that injects `-i` and
-  `-o CertificateFile=` for our hosts only and execs the real `ssh` for
-  everything else, chaining to whatever the setting already held.
+  into its storage with a `Host` block naming `127.0.0.1`, the relay's port and
+  the job or session as the `User`. Cleanest if it works, with one catch: the
+  setting replaces the user's config for *every* Remote-SSH host, so ours must
+  begin with `Include ~/.ssh/config` or we break their other hosts.
+- `remote.SSH.path` — a wrapper script that rewrites our hosts only and execs the
+  real `ssh` for everything else, chaining to whatever the setting already held.
 
 Both are settings we can revert. Neither edits a file the user maintains.
 
@@ -542,7 +564,10 @@ way the MCP data path does, bounded by the grant's scopes.
    terminal over the existing ssh WebSocket. All stable API, no unknowns — this
    is shippable on its own and is what makes the extension worth installing
    before a remote session is ever opened.
-9. Extension, remote: keypair + certificate + renewal behind the auth provider,
-   `remote.SSH.configFile` (or the wrapper) to point Remote-SSH at it, then
-   submit, poll to Running and `openFolder`. The certificate is what makes this
-   promptless; without it the user hunts for a URL in an Output channel.
+9. ~~Server: host certificate + a pre-authenticated relay~~ — golang-htcondor
+   #540. The relay is what makes the token the only credential; the host
+   certificate is what makes the published `known_hosts` line true.
+10. Extension, remote: the loopback relay and the generated ssh config behind the
+    auth provider, then submit, poll to Running and `openFolder`. The keypair and
+    certificate stay in the tree as the fallback for a gateway without the relay
+    endpoint, which is every deployment until #540 ships.
