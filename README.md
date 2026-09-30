@@ -2,8 +2,10 @@
 
 Run and edit your work inside an HTCondor job, from the editor you already use.
 
-**Status: early. Not yet published to the Marketplace.** The pieces below are
-built and tested; the panels are not written yet.
+**Status: early. Not yet published to the Marketplace, and not yet run inside a
+real VS Code.** Everything below compiles, bundles and passes its tests, and the
+parts that can be checked against OpenSSH are — but the editor-facing half has
+not been exercised, and the first run will find things.
 
 ## What it does
 
@@ -44,6 +46,25 @@ The gateway itself authenticates with an OAuth2 device code when you `ssh` to it
 by hand. That works and is unpleasant through Remote-SSH, which renders the
 prompt into a log nobody reads — which is why the extension uses a certificate
 and you never see a prompt at all.
+
+## What is in the panel
+
+A **Jobs** view in the Explorer, grouped by status with Held first, because the
+question it is opened for is almost always "what is stuck?". From a job there:
+
+- **Open a VS Code window in this job** — the remote session, without retyping
+  an id you can already see.
+- **Open a shell** — a terminal inside the job, over the same bridge the web UI
+  uses.
+- **Follow output** — stdout and stderr tailed from the execute node, with
+  stderr marked.
+- **Hold, release, remove.** Remove asks first; there is no undo.
+
+**HTCondor: Submit This File** submits the submit file in the active editor. It
+reads the file first and warns when the job would sit held waiting for an upload
+this extension cannot do yet — `transfer_executable` defaults to true, so that is
+most jobs, and a submit that only reported its 2xx would be reporting a success
+you do not have.
 
 ## Settings
 

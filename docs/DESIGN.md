@@ -586,7 +586,10 @@ As of 2026-09-30, in `github.com/bbockelm/vscode-htcondor-remote`:
 | VS Code authentication provider | written, not yet exercised in an editor |
 | Connect command (`openFolder` on the gateway authority) | written, not yet exercised |
 | Jobs panel, with hold/release/remove and output following | written, model tested |
-| Submit lens, sandbox browsing, terminal | not started |
+| Terminal in a job, over the existing ssh WebSocket | written, protocol tested |
+| Submit the active file, with the spool-hold warning | written, tested |
+| Input upload (the other half of submit) | not started |
+| Sandbox browsing (`condor:` FileSystemProvider) | not started |
 | Packaging (`.vsix`) and Marketplace | bundled; not published |
 
 The server side it depends on is merged (#520–#540, #548, #549), with one
