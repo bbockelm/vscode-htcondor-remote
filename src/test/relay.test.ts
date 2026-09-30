@@ -89,11 +89,18 @@ function dial(port: number): Promise<Socket> {
 const TIMEOUT = { timeout: 3_000 };
 
 const cleanups: Array<() => Promise<void>> = [];
-after(async () => {
-	for (const fn of cleanups) {
-		await fn();
-	}
-});
+// The hook gets a timeout of its own. Without one a cleanup that never
+// settles does not fail the run -- it hangs it, long after every test
+// has already passed or failed, so a suite that has finished its work
+// looks like a suite that is stuck.
+after(
+	async () => {
+		for (const fn of cleanups) {
+			await fn();
+		}
+	},
+	{ timeout: 5_000 }
+);
 
 test("bytes cross in both directions", TIMEOUT, async () => {
 	const server = await fakeRelayServer();
