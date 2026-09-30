@@ -571,3 +571,27 @@ way the MCP data path does, bounded by the grant's scopes.
     auth provider, then submit, poll to Running and `openFolder`. The keypair and
     certificate stay in the tree as the fallback for a gateway without the relay
     endpoint, which is every deployment until #540 ships.
+
+## Built so far
+
+As of 2026-09-30, in `github.com/bbockelm/vscode-htcondor-remote`:
+
+| Piece | State |
+| --- | --- |
+| OAuth2: discovery, dynamic registration, PKCE, refresh | done, tested |
+| Token storage and refresh serialisation | done, tested |
+| SSH key material and the authorized_keys encoding | done, tested against `ssh-keygen` |
+| Short-lived certificates with background renewal | done, tested |
+| Generated `ssh_config` | done, tested against `ssh -G` |
+| VS Code authentication provider | written, not yet exercised in an editor |
+| Connect command (`openFolder` on the gateway authority) | written, not yet exercised |
+| Jobs panel, with hold/release/remove and output following | written, model tested |
+| Submit lens, sandbox browsing, terminal | not started |
+| Packaging (`.vsix`) and Marketplace | bundled; not published |
+
+The server side it depends on is merged (#520–#540, #548, #549), with one
+exception worth naming: **nothing has yet been run inside a real VS Code.**
+Everything above compiles, bundles and passes its tests, and the parts that can
+be checked against OpenSSH are. The editor-facing half — activation, the account
+UI, `openFolder` against a live gateway — has not been exercised, and the first
+run will find things.
