@@ -136,6 +136,22 @@ export class HTCondorApi {
 		return jobs;
 	}
 
+	/** Hold a job, with an optional reason the schedd records. */
+	async holdJob(id: string, reason?: string): Promise<void> {
+		await this.request<unknown>("POST", `/api/v1/jobs/${encodeURIComponent(id)}/hold`, {
+			...(reason ? { reason } : {}),
+		});
+	}
+
+	async releaseJob(id: string): Promise<void> {
+		await this.request<unknown>("POST", `/api/v1/jobs/${encodeURIComponent(id)}/release`, {});
+	}
+
+	/** Remove a job from the queue. There is no undo. */
+	async removeJob(id: string): Promise<void> {
+		await this.request<unknown>("DELETE", `/api/v1/jobs/${encodeURIComponent(id)}`);
+	}
+
 	private async request<T>(method: string, path: string, payload?: unknown): Promise<T> {
 		const headers: Record<string, string> = {
 			Authorization: `Bearer ${await this.token()}`,
@@ -154,6 +170,12 @@ export class HTCondorApi {
 		const text = await response.text();
 		if (!response.ok) {
 			throw new ApiError(response.status, text, describeFailure(method, path, response.status, text));
+		}
+		if (text.trim() === "") {
+			// A 204, or an action that answers with nothing. Parsing an
+			// empty body as JSON throws, which would turn a successful
+			// hold into an error the user cannot act on.
+			return undefined as T;
 		}
 		try {
 			return JSON.parse(text) as T;

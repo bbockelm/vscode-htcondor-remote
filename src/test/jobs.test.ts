@@ -91,3 +91,41 @@ test("the attributes a view needs survive the round trip", async () => {
 	assert.equal(job!.holdReason, "Failed to transfer output");
 	assert.equal(describeStatus(job!.status), "Held");
 });
+
+type Seen = { url?: string | undefined; method?: string | undefined; body?: string | undefined };
+
+function recordingApi(seen: Seen, status = 200, body = ""): HTCondorApi {
+	const fetchImpl = (async (input: unknown, init?: RequestInit) => {
+		seen.url = String(input);
+		seen.method = init?.method;
+		seen.body = init?.body === undefined ? undefined : String(init.body);
+		// null, not "": the Response constructor rejects a body on a
+		// 204, which is exactly the status this test is about.
+		return new Response(body === "" ? null : body, { status });
+	}) as typeof fetch;
+	return new HTCondorApi("https://ap.example.edu", async () => "t", fetchImpl);
+}
+
+test("hold, release and remove reach the right endpoints", async () => {
+	const seen: Seen = {};
+
+	await recordingApi(seen).holdJob("12.0", "because");
+	assert.equal(seen.method, "POST");
+	assert.ok(seen.url?.endsWith("/api/v1/jobs/12.0/hold"), seen.url);
+	assert.equal(JSON.parse(seen.body ?? "{}").reason, "because");
+
+	await recordingApi(seen).releaseJob("12.0");
+	assert.ok(seen.url?.endsWith("/api/v1/jobs/12.0/release"), seen.url);
+
+	await recordingApi(seen).removeJob("12.0");
+	assert.equal(seen.method, "DELETE");
+	assert.ok(seen.url?.endsWith("/api/v1/jobs/12.0"), seen.url);
+});
+
+// An action that answers 204 has no body, and JSON.parse("") throws --
+// which would turn a hold that worked into an error the user cannot
+// act on.
+test("an empty response body is not an error", async () => {
+	const seen: Seen = {};
+	await recordingApi(seen, 204, "").holdJob("12.0");
+});

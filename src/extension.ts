@@ -68,6 +68,29 @@ export function activate(context: vscode.ExtensionContext): void {
 		// nothing to ask. Opening an editor in the job you are looking
 		// at is the shortest path this extension has, and making the
 		// user retype an id they can see is the easiest way to lose it.
+		vscode.commands.registerCommand("htcondor.holdJob", (node?: JobNode) =>
+			actOnJob(node, jobs, output, "Hold", (id) => api.holdJob(id))
+		),
+		vscode.commands.registerCommand("htcondor.releaseJob", (node?: JobNode) =>
+			actOnJob(node, jobs, output, "Release", (id) => api.releaseJob(id))
+		),
+		vscode.commands.registerCommand("htcondor.removeJob", async (node?: JobNode) => {
+			if (!node || node.kind !== "job") {
+				return;
+			}
+			// Confirmed, because there is no undo: a removed job is gone
+			// from the queue and its sandbox with it.
+			const id = jobId(node.job);
+			const answer = await vscode.window.showWarningMessage(
+				`Remove job ${id}? This cannot be undone.`,
+				{ modal: true },
+				"Remove"
+			);
+			if (answer !== "Remove") {
+				return;
+			}
+			return actOnJob(node, jobs, output, "Remove", (job) => api.removeJob(job));
+		}),
 		vscode.commands.registerCommand("htcondor.connectToJob", (node?: JobNode) => {
 			if (!node || node.kind !== "job") {
 				return connect(api, certificates, output);
@@ -211,4 +234,34 @@ function secretKeyStore(context: vscode.ExtensionContext): KeyStore {
 
 function describe(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Run one action against the job a tree node names.
+ *
+ * Refreshes afterwards either way. A panel still showing "Held" after a
+ * successful release is worse than a slow one: the user tries again,
+ * and the second attempt fails on a job that was never held.
+ */
+async function actOnJob(
+	node: JobNode | undefined,
+	jobs: JobsProvider,
+	output: vscode.LogOutputChannel,
+	verb: string,
+	act: (id: string) => Promise<void>
+): Promise<void> {
+	if (!node || node.kind !== "job") {
+		return;
+	}
+	const id = jobId(node.job);
+	try {
+		await act(id);
+		output.info(`${verb} ${id}`);
+	} catch (err: unknown) {
+		// Shown, not just logged: this one the user asked for, so a
+		// silent failure would leave them believing it worked.
+		void vscode.window.showErrorMessage(`Could not ${verb.toLowerCase()} job ${id}: ${describe(err)}`);
+	} finally {
+		jobs.refresh();
+	}
 }
