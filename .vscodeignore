@@ -1,0 +1,10 @@
+# Only the bundle ships. Sources, tests and the toolchain are not
+# useful inside a .vsix and make it many times larger.
+src/**
+out/**/*.map
+out/test/**
+node_modules/**
+.github/**
+esbuild.mjs
+tsconfig.json
+*.log
