@@ -169,6 +169,21 @@ export class HTCondorApi {
 		};
 	}
 
+	/**
+	 * Submit a submit file.
+	 *
+	 * Only half a submission for most jobs: see submit.ts. The queue
+	 * accepts this and then holds the job until its input is spooled.
+	 */
+	async submit(submitFile: string): Promise<{ clusterId: number; jobIds: string[] }> {
+		const body = await this.request<{ cluster_id: number; job_ids?: string[] }>(
+			"POST",
+			"/api/v1/jobs",
+			{ submit_file: submitFile }
+		);
+		return { clusterId: body.cluster_id, jobIds: body.job_ids ?? [] };
+	}
+
 	/** Hold a job, with an optional reason the schedd records. */
 	async holdJob(id: string, reason?: string): Promise<void> {
 		await this.request<unknown>("POST", `/api/v1/jobs/${encodeURIComponent(id)}/hold`, {

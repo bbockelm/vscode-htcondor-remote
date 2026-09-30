@@ -14,6 +14,7 @@ import { CertificateManager, CHECK_INTERVAL_MS, KeyStore } from "./certificate";
 import { JobNode } from "./jobsModel";
 import { JobsProvider } from "./jobsView";
 import { JobLogs } from "./logsView";
+import { planSubmit, submitWarning } from "./submit";
 import { HostSpec, writeSSHConfig } from "./sshconfig";
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -71,6 +72,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			await vscode.authentication.getSession(AUTH_PROVIDER_ID, [], { createIfNone: true });
 			vscode.window.showInformationMessage("Signed in to HTCondor.");
 		}),
+		vscode.commands.registerCommand("htcondor.submit", () => submitActiveEditor(api, jobs, output)),
 		vscode.commands.registerCommand("htcondor.connect", () => connect(api, certificates, output)),
 		// From the panel: the job is already chosen, so there is
 		// nothing to ask. Opening an editor in the job you are looking
@@ -269,6 +271,47 @@ async function actOnJob(
 		// Shown, not just logged: this one the user asked for, so a
 		// silent failure would leave them believing it worked.
 		void vscode.window.showErrorMessage(`Could not ${verb.toLowerCase()} job ${id}: ${describe(err)}`);
+	} finally {
+		jobs.refresh();
+	}
+}
+
+/**
+ * Submit the submit file in the active editor.
+ *
+ * Warns first when the job would spool-hold. The queue accepts a
+ * submission that needs an upload and then holds it indefinitely, so a
+ * command that only reported the 2xx would be reporting a success the
+ * user does not have.
+ */
+async function submitActiveEditor(
+	api: HTCondorApi,
+	jobs: JobsProvider,
+	output: vscode.LogOutputChannel
+): Promise<void> {
+	const editor = vscode.window.activeTextEditor;
+	if (!editor) {
+		void vscode.window.showErrorMessage("Open a submit file first.");
+		return;
+	}
+	await vscode.authentication.getSession(AUTH_PROVIDER_ID, [], { createIfNone: true });
+
+	const text = editor.document.getText();
+	const warning = submitWarning(planSubmit(text));
+	if (warning) {
+		const answer = await vscode.window.showWarningMessage(warning, "Submit anyway", "Cancel");
+		if (answer !== "Submit anyway") {
+			return;
+		}
+	}
+
+	try {
+		const result = await api.submit(text);
+		const what = result.jobIds.length === 1 ? `job ${result.jobIds[0]}` : `cluster ${result.clusterId}`;
+		output.info(`Submitted ${what}`);
+		void vscode.window.showInformationMessage(`Submitted ${what}.`);
+	} catch (err: unknown) {
+		void vscode.window.showErrorMessage(`Could not submit: ${describe(err)}`);
 	} finally {
 		jobs.refresh();
 	}

@@ -76,6 +76,10 @@
         "command": "htcondor.showLogs",
         "title": "Follow Output",
         "icon": "$(output)"
+      },
+      {
+        "command": "htcondor.submit",
+        "title": "HTCondor: Submit This File"
       }
     ],
     "authentication": [
@@ -132,6 +136,7 @@
   "activationEvents": [
     "onView:htcondor.jobs",
     "onCommand:htcondor.connect",
-    "onCommand:htcondor.signIn"
+    "onCommand:htcondor.signIn",
+    "onCommand:htcondor.submit"
   ]
 }
