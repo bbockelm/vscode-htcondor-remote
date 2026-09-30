@@ -50,6 +50,11 @@
       {
         "command": "htcondor.signIn",
         "title": "HTCondor: Sign In"
+      },
+      {
+        "command": "htcondor.refreshJobs",
+        "title": "Refresh",
+        "icon": "$(refresh)"
       }
     ],
     "authentication": [
@@ -57,9 +62,27 @@
         "id": "htcondor",
         "label": "HTCondor"
       }
-    ]
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "htcondor.jobs",
+          "name": "HTCondor Jobs"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "htcondor.refreshJobs",
+          "when": "view == htcondor.jobs",
+          "group": "navigation"
+        }
+      ]
+    }
   },
   "activationEvents": [
+    "onView:htcondor.jobs",
     "onCommand:htcondor.connect",
     "onCommand:htcondor.signIn"
   ]

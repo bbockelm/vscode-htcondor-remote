@@ -11,6 +11,7 @@ import * as vscode from "vscode";
 import { HTCondorApi } from "./api";
 import { AUTH_PROVIDER_ID, HTCondorAuthProvider } from "./auth";
 import { CertificateManager, CHECK_INTERVAL_MS, KeyStore } from "./certificate";
+import { JobsProvider } from "./jobsView";
 import { HostSpec, writeSSHConfig } from "./sshconfig";
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -53,7 +54,10 @@ export function activate(context: vscode.ExtensionContext): void {
 	}, CHECK_INTERVAL_MS);
 	context.subscriptions.push({ dispose: () => clearInterval(renewal) });
 
+	const jobs = new JobsProvider(api, output);
 	context.subscriptions.push(
+		vscode.window.registerTreeDataProvider("htcondor.jobs", jobs),
+		vscode.commands.registerCommand("htcondor.refreshJobs", () => jobs.refresh()),
 		vscode.commands.registerCommand("htcondor.signIn", async () => {
 			await vscode.authentication.getSession(AUTH_PROVIDER_ID, [], { createIfNone: true });
 			vscode.window.showInformationMessage("Signed in to HTCondor.");

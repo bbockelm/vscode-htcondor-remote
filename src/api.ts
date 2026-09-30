@@ -110,6 +110,32 @@ export class HTCondorApi {
 		};
 	}
 
+	/** The caller's jobs, newest cluster first. */
+	async listJobs(options: ListJobsOptions = {}): Promise<JobSummary[]> {
+		const params = new URLSearchParams();
+		if (options.constraint) {
+			params.set("constraint", options.constraint);
+		}
+		params.set("limit", String(options.limit ?? 200));
+		params.set("projection", JOB_PROJECTION.join(","));
+
+		const body = await this.request<{ jobs?: Array<Record<string, unknown>> }>(
+			"GET",
+			`/api/v1/jobs?${params.toString()}`
+		);
+		const jobs: JobSummary[] = [];
+		for (const ad of body.jobs ?? []) {
+			const summary = toJobSummary(ad);
+			if (summary) {
+				jobs.push(summary);
+			}
+		}
+		// Newest first: a tree that puts the oldest at the top buries
+		// the job the user just submitted.
+		jobs.sort((a, b) => b.cluster - a.cluster || b.proc - a.proc);
+		return jobs;
+	}
+
 	private async request<T>(method: string, path: string, payload?: unknown): Promise<T> {
 		const headers: Record<string, string> = {
 			Authorization: `Bearer ${await this.token()}`,
@@ -181,4 +207,99 @@ function serverMessage(body: string): string {
 		// something in front of the server, which is not worth quoting.
 	}
 	return "";
+}
+
+/** The job attributes the views need, as HTCondor spells them. */
+export interface JobSummary {
+	cluster: number;
+	proc: number;
+	/** HTCondor's JobStatus code. */
+	status: number;
+	owner?: string;
+	batchName?: string;
+	command?: string;
+	holdReason?: string;
+	remoteHost?: string;
+}
+
+/**
+ * HTCondor's JobStatus codes.
+ *
+ * Spelled out because a bare number in a tree label is unreadable, and
+ * because the mapping is easy to get subtly wrong: 3 is Removed and 4
+ * is Completed, which is the pair people reverse.
+ */
+export const JOB_STATUS: Record<number, string> = {
+	1: "Idle",
+	2: "Running",
+	3: "Removed",
+	4: "Completed",
+	5: "Held",
+	6: "Transferring Output",
+	7: "Suspended",
+};
+
+export function describeStatus(status: number): string {
+	return JOB_STATUS[status] ?? `Unknown (${status})`;
+}
+
+/** A job id as HTCondor writes it. */
+export function jobId(job: { cluster: number; proc: number }): string {
+	return `${job.cluster}.${job.proc}`;
+}
+
+export interface ListJobsOptions {
+	/** A ClassAd expression. Omitted means every job the caller can see. */
+	constraint?: string;
+	limit?: number;
+}
+
+/** Attributes worth asking for. Fewer means smaller ads over the wire. */
+const JOB_PROJECTION = [
+	"ClusterId",
+	"ProcId",
+	"JobStatus",
+	"Owner",
+	"JobBatchName",
+	"Cmd",
+	"HoldReason",
+	"RemoteHost",
+];
+
+/** Parse one ClassAd from the jobs endpoint into a JobSummary. */
+export function toJobSummary(ad: Record<string, unknown>): JobSummary | undefined {
+	const cluster = numberOf(ad.ClusterId);
+	const proc = numberOf(ad.ProcId);
+	if (cluster === undefined || proc === undefined) {
+		// An ad without an id is not addressable, so there is nothing
+		// useful a view could do with it.
+		return undefined;
+	}
+	return {
+		cluster,
+		proc,
+		status: numberOf(ad.JobStatus) ?? 0,
+		...(stringOf(ad.Owner) ? { owner: stringOf(ad.Owner)! } : {}),
+		...(stringOf(ad.JobBatchName) ? { batchName: stringOf(ad.JobBatchName)! } : {}),
+		...(stringOf(ad.Cmd) ? { command: stringOf(ad.Cmd)! } : {}),
+		...(stringOf(ad.HoldReason) ? { holdReason: stringOf(ad.HoldReason)! } : {}),
+		...(stringOf(ad.RemoteHost) ? { remoteHost: stringOf(ad.RemoteHost)! } : {}),
+	};
+}
+
+function numberOf(value: unknown): number | undefined {
+	if (typeof value === "number") {
+		return value;
+	}
+	// ClassAd values arrive as numbers, but an attribute that was set
+	// from a string expression comes back as one -- and Number("") is
+	// 0, which would silently become cluster 0.
+	if (typeof value === "string" && value.trim() !== "" && !Number.isNaN(Number(value))) {
+		return Number(value);
+	}
+	return undefined;
+}
+
+function stringOf(value: unknown): string | undefined {
+	return typeof value === "string" && value !== "" ? value : undefined;
 }
