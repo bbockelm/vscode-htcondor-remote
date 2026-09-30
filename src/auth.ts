@@ -27,46 +27,31 @@ import {
 	register,
 	SCOPES,
 } from "./oauth2";
+import { StoredTokens, TokenStore } from "./tokens";
 
 export const AUTH_PROVIDER_ID = "htcondor";
 const CLIENT_SECRET_KEY = "htcondor.oauth2.client";
-const TOKENS_SECRET_KEY = "htcondor.oauth2.tokens";
-
-/**
- * Replace a token this long before it expires.
- *
- * A minute. Unlike the SSH certificate, this one is refreshed on the
- * path that uses it, so the window only has to cover the request in
- * flight rather than a laptop that was asleep.
- */
-const REFRESH_BEFORE_MS = 60 * 1000;
-
-interface StoredTokens {
-	accessToken: string;
-	refreshToken?: string;
-	expiresAt?: string;
-	account: string;
-}
 
 export class HTCondorAuthProvider implements vscode.AuthenticationProvider, vscode.Disposable {
 	private readonly changed = new vscode.EventEmitter<vscode.AuthenticationProviderAuthenticationSessionsChangeEvent>();
 	readonly onDidChangeSessions = this.changed.event;
 
 	private discovery: Discovery | undefined;
-	/** Serialises refreshes, so two callers do not both spend the token. */
-	private inFlight: Promise<string> | undefined;
+	private readonly tokens: TokenStore;
 
 	constructor(
 		private readonly secrets: vscode.SecretStorage,
 		private readonly serverUrl: () => string
-	) {}
+	) {
+		this.tokens = new TokenStore(secrets, (refreshToken) => this.refresh(refreshToken));
+	}
 
 	dispose(): void {
 		this.changed.dispose();
 	}
 
 	async getSessions(_scopes?: readonly string[]): Promise<vscode.AuthenticationSession[]> {
-		const stored = await this.read();
+		const stored = await this.tokens.read();
 		if (!stored) {
 			return [];
 		}
@@ -83,8 +68,8 @@ export class HTCondorAuthProvider implements vscode.AuthenticationProvider, vsco
 	}
 
 	async removeSession(_sessionId: string): Promise<void> {
-		const stored = await this.read();
-		await this.secrets.delete(TOKENS_SECRET_KEY);
+		const stored = await this.tokens.read();
+		await this.tokens.clear();
 		if (stored) {
 			this.changed.fire({ added: [], removed: [this.toSession(stored)], changed: [] });
 		}
@@ -93,41 +78,19 @@ export class HTCondorAuthProvider implements vscode.AuthenticationProvider, vsco
 	/**
 	 * A bearer token, refreshed if it is about to expire.
 	 *
-	 * This is the `TokenSource` the rest of the extension takes. It does
-	 * NOT start a sign-in: a background renewal that pops a browser
-	 * window is worse than an error, and the caller knows whether the
-	 * user is present.
+	 * This is the `TokenSource` the rest of the extension takes. The
+	 * lifecycle lives in TokenStore, where it can be tested against
+	 * concurrent callers.
 	 */
 	async token(): Promise<string> {
-		const stored = await this.read();
-		if (!stored) {
-			throw new Error("Not signed in to HTCondor.");
-		}
-		const expiresAt = stored.expiresAt ? Date.parse(stored.expiresAt) : undefined;
-		if (expiresAt !== undefined && expiresAt - Date.now() < REFRESH_BEFORE_MS) {
-			if (!stored.refreshToken) {
-				throw new Error("This HTCondor sign-in has expired. Sign in again to continue.");
-			}
-			// One refresh at a time. Two concurrent callers would each
-			// spend the refresh token, and the second spend fails --
-			// which reads as an expired session on a perfectly good one.
-			this.inFlight ??= this.refresh(stored.refreshToken).finally(() => {
-				this.inFlight = undefined;
-			});
-			return this.inFlight;
-		}
-		return stored.accessToken;
+		return this.tokens.token();
 	}
 
-	private async refresh(refreshToken: string): Promise<string> {
+	private async refresh(refreshToken: string): Promise<{ tokens: Tokens; account: string }> {
 		const discovery = await this.resolveDiscovery();
 		const client = await this.client(discovery);
-		const tokens = await refreshTokens(discovery, client, refreshToken);
-		// A refresh that returns no new refresh token keeps the old one;
-		// dropping it would end the session at the next expiry.
-		const account = await this.accountName(tokens.accessToken);
-		await this.write(tokens, account, refreshToken);
-		return tokens.accessToken;
+		const refreshed = await refreshTokens(discovery, client, refreshToken);
+		return { tokens: refreshed, account: await this.accountName(refreshed.accessToken) };
 	}
 
 	private async signIn(cancel: vscode.CancellationToken): Promise<vscode.AuthenticationSession> {
@@ -155,15 +118,9 @@ export class HTCondorAuthProvider implements vscode.AuthenticationProvider, vsco
 				}),
 			]);
 
-			const tokens = await exchangeCode(discovery, client, code, verifier, redirect.uri);
-			const account = await this.accountName(tokens.accessToken);
-			await this.write(tokens, account);
-			return this.toSession({
-				accessToken: tokens.accessToken,
-				...(tokens.refreshToken ? { refreshToken: tokens.refreshToken } : {}),
-				...(tokens.expiresAt ? { expiresAt: tokens.expiresAt.toISOString() } : {}),
-				account,
-			});
+			const exchanged = await exchangeCode(discovery, client, code, verifier, redirect.uri);
+			const account = await this.accountName(exchanged.accessToken);
+			return this.toSession(await this.tokens.write(exchanged, account));
 		} finally {
 			redirect.close();
 		}
@@ -203,31 +160,6 @@ export class HTCondorAuthProvider implements vscode.AuthenticationProvider, vsco
 		const credentials = await register(discovery);
 		await this.secrets.store(CLIENT_SECRET_KEY, JSON.stringify(credentials));
 		return credentials;
-	}
-
-	private async read(): Promise<StoredTokens | undefined> {
-		const raw = await this.secrets.get(TOKENS_SECRET_KEY);
-		if (!raw) {
-			return undefined;
-		}
-		try {
-			return JSON.parse(raw) as StoredTokens;
-		} catch {
-			// Unreadable storage is not a reason to wedge: treat it as
-			// signed out, which the user can fix by signing in.
-			return undefined;
-		}
-	}
-
-	private async write(tokens: Tokens, account: string, fallbackRefresh?: string): Promise<void> {
-		const refresh = tokens.refreshToken ?? fallbackRefresh;
-		const stored: StoredTokens = {
-			accessToken: tokens.accessToken,
-			...(refresh ? { refreshToken: refresh } : {}),
-			...(tokens.expiresAt ? { expiresAt: tokens.expiresAt.toISOString() } : {}),
-			account,
-		};
-		await this.secrets.store(TOKENS_SECRET_KEY, JSON.stringify(stored));
 	}
 
 	private toSession(stored: StoredTokens): vscode.AuthenticationSession {
