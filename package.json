@@ -30,8 +30,33 @@
           "type": "string",
           "default": "",
           "description": "Base URL of the HTCondor API server, e.g. https://ap.example.edu"
+        },
+        "htcondor.sshGateway": {
+          "type": "string",
+          "default": "",
+          "description": "The SSH gateway to reach jobs through, as you would type it for ssh: ap.example.edu, or ap.example.edu:2222. Only needed while the access point does not publish its own address."
         }
       }
-    }
-  }
+    },
+    "commands": [
+      {
+        "command": "htcondor.connect",
+        "title": "HTCondor: Connect to a Job or Session"
+      },
+      {
+        "command": "htcondor.signIn",
+        "title": "HTCondor: Sign In"
+      }
+    ],
+    "authentication": [
+      {
+        "id": "htcondor",
+        "label": "HTCondor"
+      }
+    ]
+  },
+  "activationEvents": [
+    "onCommand:htcondor.connect",
+    "onCommand:htcondor.signIn"
+  ]
 }

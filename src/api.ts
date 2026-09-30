@@ -12,6 +12,19 @@ export interface SSHCertificateAuthority {
 	/** `@cert-authority * <ca>`, ready for a known_hosts file. */
 	knownHostsLine: string;
 	fingerprint: string;
+	/**
+	 * Where the SSH gateway is, when the access point says.
+	 *
+	 * Not currently published by any released server, which is the one
+	 * thing standing between this extension and needing no
+	 * configuration at all: the server knows the name from
+	 * HTTP_API_SSH_GATEWAY_HOST -- it is already the certificate's
+	 * principal -- but does not tell clients. Read here so that a
+	 * server which starts publishing it works with no extension change,
+	 * with a setting as the fallback until then.
+	 */
+	gatewayHost?: string;
+	gatewayPort?: number;
 }
 
 /** What POST /api/v1/ssh/certificate answers. */
@@ -51,11 +64,15 @@ export class HTCondorApi {
 			public_key: string;
 			known_hosts_line: string;
 			fingerprint: string;
+			gateway_host?: string;
+			gateway_port?: number;
 		}>("GET", "/api/v1/ssh/ca");
 		return {
 			publicKey: body.public_key,
 			knownHostsLine: body.known_hosts_line,
 			fingerprint: body.fingerprint,
+			...(body.gateway_host ? { gatewayHost: body.gateway_host } : {}),
+			...(body.gateway_port ? { gatewayPort: body.gateway_port } : {}),
 		};
 	}
 
