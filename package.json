@@ -1,0 +1,33 @@
+{
+  "name": "vscode-htcondor-remote",
+  "displayName": "HTCondor",
+  "description": "Run and edit your work inside an HTCondor job.",
+  "version": "0.0.1",
+  "publisher": "htcondor",
+  "license": "Apache-2.0",
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Other"],
+  "main": "./out/extension.js",
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -p . -w",
+    "test": "npm run compile && node --test out/test/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.6.0"
+  },
+  "contributes": {
+    "configuration": {
+      "title": "HTCondor",
+      "properties": {
+        "htcondor.serverUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Base URL of the HTCondor API server, e.g. https://ap.example.edu"
+        }
+      }
+    }
+  }
+}
