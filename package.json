@@ -23,6 +23,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.90.0",
+    "@types/ws": "^8.18.2",
     "esbuild": "^0.28.2",
     "typescript": "^5.6.0"
   },
@@ -80,6 +81,11 @@
       {
         "command": "htcondor.submit",
         "title": "HTCondor: Submit This File"
+      },
+      {
+        "command": "htcondor.openTerminal",
+        "title": "Open a Shell in This Job",
+        "icon": "$(terminal)"
       }
     ],
     "authentication": [
@@ -129,6 +135,11 @@
           "command": "htcondor.showLogs",
           "when": "view == htcondor.jobs && viewItem == htcondor.job",
           "group": "inline"
+        },
+        {
+          "command": "htcondor.openTerminal",
+          "when": "view == htcondor.jobs && viewItem == htcondor.job",
+          "group": "inline"
         }
       ]
     }
@@ -138,5 +149,8 @@
     "onCommand:htcondor.connect",
     "onCommand:htcondor.signIn",
     "onCommand:htcondor.submit"
-  ]
+  ],
+  "dependencies": {
+    "ws": "^8.22.0"
+  }
 }

@@ -15,6 +15,7 @@ import { JobNode } from "./jobsModel";
 import { JobsProvider } from "./jobsView";
 import { JobLogs } from "./logsView";
 import { planSubmit, submitWarning } from "./submit";
+import { JobTerminal } from "./terminal";
 import { HostSpec, writeSSHConfig } from "./sshconfig";
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -61,6 +62,19 @@ export function activate(context: vscode.ExtensionContext): void {
 	const logs = new JobLogs(api, output);
 	context.subscriptions.push(
 		logs,
+		vscode.commands.registerCommand("htcondor.openTerminal", async (node?: JobNode) => {
+			if (node?.kind !== "job") {
+				return;
+			}
+			await vscode.authentication.getSession(AUTH_PROVIDER_ID, [], { createIfNone: true });
+			const id = jobId(node.job);
+			vscode.window
+				.createTerminal({
+					name: `HTCondor ${id}`,
+					pty: new JobTerminal(serverUrl(), () => auth.token(), id),
+				})
+				.show();
+		}),
 		vscode.commands.registerCommand("htcondor.showLogs", (node?: JobNode) => {
 			if (node?.kind === "job") {
 				logs.show(jobId(node.job));
