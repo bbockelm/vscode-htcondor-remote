@@ -8,9 +8,10 @@
 
 import * as vscode from "vscode";
 
-import { HTCondorApi } from "./api";
+import { HTCondorApi, jobId } from "./api";
 import { AUTH_PROVIDER_ID, HTCondorAuthProvider } from "./auth";
 import { CertificateManager, CHECK_INTERVAL_MS, KeyStore } from "./certificate";
+import { JobNode } from "./jobsModel";
 import { JobsProvider } from "./jobsView";
 import { HostSpec, writeSSHConfig } from "./sshconfig";
 
@@ -62,7 +63,17 @@ export function activate(context: vscode.ExtensionContext): void {
 			await vscode.authentication.getSession(AUTH_PROVIDER_ID, [], { createIfNone: true });
 			vscode.window.showInformationMessage("Signed in to HTCondor.");
 		}),
-		vscode.commands.registerCommand("htcondor.connect", () => connect(api, certificates, output))
+		vscode.commands.registerCommand("htcondor.connect", () => connect(api, certificates, output)),
+		// From the panel: the job is already chosen, so there is
+		// nothing to ask. Opening an editor in the job you are looking
+		// at is the shortest path this extension has, and making the
+		// user retype an id they can see is the easiest way to lose it.
+		vscode.commands.registerCommand("htcondor.connectToJob", (node?: JobNode) => {
+			if (!node || node.kind !== "job") {
+				return connect(api, certificates, output);
+			}
+			return connect(api, certificates, output, jobId(node.job));
+		})
 	);
 }
 
@@ -80,18 +91,21 @@ export function deactivate(): void {
 async function connect(
 	api: HTCondorApi,
 	certificates: CertificateManager,
-	output: vscode.LogOutputChannel
+	output: vscode.LogOutputChannel,
+	chosen?: string
 ): Promise<void> {
 	await vscode.authentication.getSession(AUTH_PROVIDER_ID, [], { createIfNone: true });
 
 	const target =
+		chosen ??
 		(
 			await vscode.window.showInputBox({
 				title: "Connect to HTCondor",
 				prompt: "A job id such as 12345.0, or +name for a session. Leave empty for your default session.",
 				placeHolder: "12345.0",
 			})
-		)?.trim() ?? "";
+		)?.trim() ??
+		"";
 
 	await vscode.window.withProgress(
 		{ location: vscode.ProgressLocation.Notification, title: "Preparing an HTCondor session" },

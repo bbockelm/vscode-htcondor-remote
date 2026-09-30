@@ -55,6 +55,10 @@
         "command": "htcondor.refreshJobs",
         "title": "Refresh",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "htcondor.connectToJob",
+        "title": "Open a VS Code Window in This Job"
       }
     ],
     "authentication": [
@@ -77,6 +81,13 @@
           "command": "htcondor.refreshJobs",
           "when": "view == htcondor.jobs",
           "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "htcondor.connectToJob",
+          "when": "view == htcondor.jobs && viewItem == htcondor.job",
+          "group": "inline"
         }
       ]
     }
