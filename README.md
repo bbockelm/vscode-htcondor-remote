@@ -87,8 +87,25 @@ Nothing here has run inside a real VS Code yet, so this is the interesting part.
 ```bash
 npm install
 npm run package      # writes htcondor.vsix
+```
+
+Then install it, either from the Extensions view — the `...` menu, **Install from
+VSIX…** — or from a shell:
+
+```bash
 code --install-extension htcondor.vsix
 ```
+
+`code` is not on `PATH` by default on macOS. Either run **Shell Command: Install
+'code' command in PATH** from the Command Palette once, or use the copy inside
+the app:
+
+```bash
+"/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" \
+    --install-extension htcondor.vsix
+```
+
+Reload the window afterwards, or the extension host keeps running the old copy.
 
 Then set `htcondor.serverUrl` to your access point, and — only if it does not
 publish its own SSH gateway address — `htcondor.sshGateway` to the host you
