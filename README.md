@@ -80,6 +80,24 @@ you do not have.
 - The **Remote - SSH** extension.
 - An `ssh` on your PATH. Every desktop OS ships one.
 
+## Trying it
+
+Nothing here has run inside a real VS Code yet, so this is the interesting part.
+
+```bash
+npm install
+npm run package      # writes htcondor.vsix
+code --install-extension htcondor.vsix
+```
+
+Then set `htcondor.serverUrl` to your access point, and — only if it does not
+publish its own SSH gateway address — `htcondor.sshGateway` to the host you
+would `ssh` to. Run **HTCondor: Sign In** from the command palette first: it
+opens a browser once, and everything after it should be silent.
+
+The Explorer gets an **HTCondor Jobs** view. If something does not work, the
+**HTCondor** output channel is where this extension says why.
+
 ## Developing
 
 ```bash

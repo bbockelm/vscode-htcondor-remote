@@ -15,15 +15,17 @@
   "scripts": {
     "compile": "rm -rf out && tsc -p .",
     "watch": "node esbuild.mjs --watch",
-    "test": "npm run compile && node --test --test-force-exit out/test/*.test.js",
+    "test": "npm run compile && npm run bundle && node --test --test-force-exit out/test/*.test.js",
     "bundle": "node esbuild.mjs",
     "vscode:prepublish": "npm run check && npm run bundle",
-    "check": "tsc -p . --noEmit"
+    "check": "tsc -p . --noEmit",
+    "package": "vsce package --out htcondor.vsix"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.90.0",
     "@types/ws": "^8.18.2",
+    "@vscode/vsce": "^4.0.0",
     "esbuild": "^0.28.2",
     "typescript": "^5.6.0"
   },

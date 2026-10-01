@@ -1,10 +1,16 @@
-# Only the bundle ships. Sources, tests and the toolchain are not
-# useful inside a .vsix and make it many times larger.
+# Only the bundle ships.
+#
+# `npm test` compiles every source to out/ with tsc, and esbuild then
+# writes out/extension.js over the top. Everything else in out/ is
+# already inside that bundle, so shipping it doubles the package and
+# invites someone to load the wrong copy.
+out/**
+!out/extension.js
+
 src/**
-out/**/*.map
-out/test/**
 node_modules/**
 .github/**
 esbuild.mjs
 tsconfig.json
+*.vsix
 *.log
