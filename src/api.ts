@@ -184,6 +184,51 @@ export class HTCondorApi {
 		return { clusterId: body.cluster_id, jobIds: body.job_ids ?? [] };
 	}
 
+	/**
+	 * Start an interactive session.
+	 *
+	 * A job that exists to be connected to rather than to run
+	 * something. Every field is optional and the server fills
+	 * defaults.
+	 */
+	async createSession(spec: SessionSpec = {}): Promise<SessionCreated> {
+		const body = await this.request<{
+			instance_id: string;
+			cluster_id: number;
+			proc_id: number;
+			job_id: string;
+			batch_name: string;
+		}>("POST", "/api/v1/interactive/terminal", {
+			...(spec.cpus ? { cpus: spec.cpus } : {}),
+			...(spec.memoryMB ? { memory_mb: spec.memoryMB } : {}),
+			...(spec.diskMB ? { disk_mb: spec.diskMB } : {}),
+			...(spec.gpus ? { gpus: spec.gpus } : {}),
+			...(spec.submitLines ? { submit_lines: spec.submitLines } : {}),
+		});
+		return {
+			instanceId: body.instance_id,
+			jobId: body.job_id,
+			cluster: body.cluster_id,
+			proc: body.proc_id,
+			batchName: body.batch_name,
+		};
+	}
+
+	/** The caller's interactive sessions. */
+	async listSessions(): Promise<SessionSummary[]> {
+		const body = await this.request<{ sessions?: Array<Record<string, unknown>> }>(
+			"GET",
+			"/api/v1/interactive/terminal"
+		);
+		return (body.sessions ?? []).map((raw) => ({
+			instanceId: String(raw.instance_id ?? ""),
+			jobId: String(raw.job_id ?? ""),
+			status: typeof raw.job_status === "number" ? raw.job_status : 0,
+			batchName: String(raw.batch_name ?? ""),
+			...(raw.hold_reason ? { holdReason: String(raw.hold_reason) } : {}),
+		}));
+	}
+
 	/** Hold a job, with an optional reason the schedd records. */
 	async holdJob(id: string, reason?: string): Promise<void> {
 		await this.request<unknown>("POST", `/api/v1/jobs/${encodeURIComponent(id)}/hold`, {
@@ -385,4 +430,29 @@ export interface PeekResult {
 	stderr: string;
 	/** Pass these back on the next call to get only what is new. */
 	offsets: { stdout: number; stderr: number };
+}
+
+/** What to ask for when starting a session. All optional. */
+export interface SessionSpec {
+	cpus?: number;
+	memoryMB?: number;
+	diskMB?: number;
+	gpus?: number;
+	submitLines?: string;
+}
+
+export interface SessionCreated {
+	instanceId: string;
+	jobId: string;
+	cluster: number;
+	proc: number;
+	batchName: string;
+}
+
+export interface SessionSummary {
+	instanceId: string;
+	jobId: string;
+	status: number;
+	batchName: string;
+	holdReason?: string;
 }

@@ -10,6 +10,8 @@ import * as vscode from "vscode";
 
 import { HTCondorApi, jobId } from "./api";
 import { discover } from "./oauth2";
+import { PRESETS, describeSpec, isReady, isStuck, parseSize } from "./sessions";
+import { SessionSpec } from "./api";
 import { AUTH_PROVIDER_ID, HTCondorAuthProvider } from "./auth";
 import { CertificateManager, CHECK_INTERVAL_MS, KeyStore } from "./certificate";
 import { JobNode } from "./jobsModel";
@@ -109,6 +111,9 @@ export function activate(context: vscode.ExtensionContext): void {
 			await vscode.authentication.getSession(AUTH_PROVIDER_ID, [], { createIfNone: true });
 			vscode.window.showInformationMessage("Signed in to HTCondor.");
 		}),
+		vscode.commands.registerCommand("htcondor.newSession", () =>
+			newSession(api, certificates, jobs, output)
+		),
 		vscode.commands.registerCommand("htcondor.setup", () => setup(jobs, setContext)),
 		vscode.commands.registerCommand("htcondor.submit", () => submitActiveEditor(api, jobs, output)),
 		vscode.commands.registerCommand("htcondor.connect", () => connect(api, certificates, output)),
@@ -419,4 +424,122 @@ async function setup(jobs: JobsProvider, refreshContext: () => Promise<void>): P
 	await vscode.authentication.getSession(AUTH_PROVIDER_ID, [], { createIfNone: true });
 	await refreshContext();
 	jobs.refresh();
+}
+
+/**
+ * Start an interactive session and offer to open it.
+ *
+ * A session is a job that exists to be connected to. Creating one and
+ * leaving the user to find it in the tree would be most of a feature:
+ * the thing they wanted was to be inside it, so this waits for it to
+ * start and then offers the two ways in.
+ */
+async function newSession(
+	api: HTCondorApi,
+	certificates: CertificateManager,
+	jobs: JobsProvider,
+	output: vscode.LogOutputChannel
+): Promise<void> {
+	await vscode.authentication.getSession(AUTH_PROVIDER_ID, [], { createIfNone: true });
+
+	const picked = await vscode.window.showQuickPick(
+		[
+			...PRESETS.map((p) => ({ label: p.label, detail: p.detail, spec: p.spec })),
+			{ label: "Custom…", detail: "Say what you need, e.g. 4 cpus, 16 GB", spec: undefined },
+		],
+		{ title: "New interactive session", placeHolder: "How big?" }
+	);
+	if (!picked) {
+		return;
+	}
+
+	let spec: SessionSpec | undefined = picked.spec;
+	if (!spec) {
+		const typed = await vscode.window.showInputBox({
+			title: "Session size",
+			prompt: "CPUs, memory and GPUs, in any order.",
+			placeHolder: "4 cpus, 16 GB",
+			// Validated as typed, so an unreadable size is caught here
+			// rather than silently becoming the server's defaults.
+			validateInput: (value) =>
+				value.trim() === "" || parseSize(value) ? undefined : "Try something like `4 cpus, 16 GB`.",
+		});
+		if (typed === undefined) {
+			return;
+		}
+		spec = parseSize(typed) ?? {};
+	}
+
+	const created = await vscode.window.withProgress(
+		{ location: vscode.ProgressLocation.Notification, title: "Starting a session", cancellable: true },
+		async (progress, cancel) => {
+			progress.report({ message: describeSpec(spec) });
+			const session = await api.createSession(spec);
+			output.info(`Created session ${session.jobId} (${describeSpec(spec)})`);
+			jobs.refresh();
+
+			// Waiting here rather than returning immediately, because
+			// the queue wait is the whole cost of a session and a user
+			// who is told "created" has no idea whether to act.
+			progress.report({ message: `${session.jobId} is queued` });
+			const ready = await waitForSession(api, session.jobId, progress, cancel);
+			jobs.refresh();
+			return ready ? session : undefined;
+		}
+	);
+	if (!created) {
+		return;
+	}
+
+	const answer = await vscode.window.showInformationMessage(
+		`Session ${created.jobId} is running.`,
+		"Open a window",
+		"Open a shell"
+	);
+	if (answer === "Open a window") {
+		await connect(api, certificates, output, created.jobId);
+	} else if (answer === "Open a shell") {
+		await vscode.commands.executeCommand("htcondor.openTerminal", {
+			kind: "job",
+			job: { cluster: created.cluster, proc: created.proc, status: 2 },
+		});
+	}
+}
+
+/**
+ * Poll until a session runs, is stuck, or the user gives up.
+ *
+ * Reports what it is waiting for rather than spinning silently: a
+ * queue wait with no explanation is indistinguishable from a hang, and
+ * a held session would otherwise be waited on forever.
+ */
+async function waitForSession(
+	api: HTCondorApi,
+	jobId: string,
+	progress: vscode.Progress<{ message?: string }>,
+	cancel: vscode.CancellationToken
+): Promise<boolean> {
+	for (let attempt = 0; !cancel.isCancellationRequested; attempt++) {
+		const sessions = await api.listSessions();
+		const session = sessions.find((s) => s.jobId === jobId);
+		if (session) {
+			if (isReady(session.status)) {
+				return true;
+			}
+			if (isStuck(session.status)) {
+				void vscode.window.showErrorMessage(
+					session.holdReason
+						? `Session ${jobId} is held: ${session.holdReason}`
+						: `Session ${jobId} stopped before it started.`
+				);
+				return false;
+			}
+			progress.report({ message: `${jobId} is waiting for a slot (${attempt * 3}s)` });
+		}
+		await new Promise((resolve) => setTimeout(resolve, 3_000));
+	}
+	// Cancelled. The session is left alone on purpose -- it is still
+	// queued, and the user can connect to it from the tree when it
+	// starts.
+	return false;
 }

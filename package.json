@@ -92,6 +92,11 @@
       {
         "command": "htcondor.setup",
         "title": "HTCondor: Connect to an Access Point"
+      },
+      {
+        "command": "htcondor.newSession",
+        "title": "New Interactive Session",
+        "icon": "$(add)"
       }
     ],
     "authentication": [
@@ -110,6 +115,11 @@
     },
     "menus": {
       "view/title": [
+        {
+          "command": "htcondor.newSession",
+          "when": "view == htcondor.jobs",
+          "group": "navigation@1"
+        },
         {
           "command": "htcondor.refreshJobs",
           "when": "view == htcondor.jobs",
@@ -172,7 +182,7 @@
       {
         "view": "htcondor.jobs",
         "when": "htcondor.configured && htcondor.signedIn",
-        "contents": "No jobs in the queue.\n[Submit a file](command:htcondor.submit)\n[Refresh](command:htcondor.refreshJobs)\n"
+        "contents": "No jobs in the queue.\n[New interactive session](command:htcondor.newSession)\n[Submit a file](command:htcondor.submit)\n"
       }
     ]
   },
