@@ -9,6 +9,7 @@
 import * as vscode from "vscode";
 
 import { HTCondorApi, jobId } from "./api";
+import { discover } from "./oauth2";
 import { AUTH_PROVIDER_ID, HTCondorAuthProvider } from "./auth";
 import { CertificateManager, CHECK_INTERVAL_MS, KeyStore } from "./certificate";
 import { JobNode } from "./jobsModel";
@@ -58,6 +59,28 @@ export function activate(context: vscode.ExtensionContext): void {
 	}, CHECK_INTERVAL_MS);
 	context.subscriptions.push({ dispose: () => clearInterval(renewal) });
 
+	// The welcome view keys off these, so an unconfigured extension
+	// offers a button instead of an empty tree and a settings hunt.
+	const setContext = async (): Promise<void> => {
+		const configured = vscode.workspace.getConfiguration("htcondor").get<string>("serverUrl", "").trim() !== "";
+		await vscode.commands.executeCommand("setContext", "htcondor.configured", configured);
+		let signedIn = false;
+		if (configured) {
+			const sessions = await auth.getSessions();
+			signedIn = sessions.length > 0;
+		}
+		await vscode.commands.executeCommand("setContext", "htcondor.signedIn", signedIn);
+	};
+	void setContext();
+	context.subscriptions.push(
+		auth.onDidChangeSessions(() => void setContext()),
+		vscode.workspace.onDidChangeConfiguration((e) => {
+			if (e.affectsConfiguration("htcondor.serverUrl")) {
+				void setContext();
+			}
+		})
+	);
+
 	const jobs = new JobsProvider(api, output);
 	const logs = new JobLogs(api, output);
 	context.subscriptions.push(
@@ -86,6 +109,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			await vscode.authentication.getSession(AUTH_PROVIDER_ID, [], { createIfNone: true });
 			vscode.window.showInformationMessage("Signed in to HTCondor.");
 		}),
+		vscode.commands.registerCommand("htcondor.setup", () => setup(jobs, setContext)),
 		vscode.commands.registerCommand("htcondor.submit", () => submitActiveEditor(api, jobs, output)),
 		vscode.commands.registerCommand("htcondor.connect", () => connect(api, certificates, output)),
 		// From the panel: the job is already chosen, so there is
@@ -329,4 +353,70 @@ async function submitActiveEditor(
 	} finally {
 		jobs.refresh();
 	}
+}
+
+/**
+ * Point the extension at an access point and sign in, in one go.
+ *
+ * This exists because the alternative was three separate places: the
+ * Settings UI for the URL, the Settings UI again for the gateway, and
+ * the command palette for the sign-in -- none of which a new user has
+ * any reason to look in. One command, asked for in the view they are
+ * already looking at.
+ */
+async function setup(jobs: JobsProvider, refreshContext: () => Promise<void>): Promise<void> {
+	const config = vscode.workspace.getConfiguration("htcondor");
+	const url = await vscode.window.showInputBox({
+		title: "Connect to an HTCondor access point",
+		prompt: "The address of your access point's web interface.",
+		placeHolder: "https://ap.example.edu",
+		value: config.get<string>("serverUrl", ""),
+		ignoreFocusOut: true,
+		validateInput: (value) => {
+			const trimmed = value.trim();
+			if (trimmed === "") {
+				return "An address is required.";
+			}
+			try {
+				const parsed = new URL(trimmed);
+				if (parsed.protocol !== "https:" && parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1") {
+					// A bearer token travels on every request, so http
+					// to anywhere but this machine would put it on the
+					// wire in clear.
+					return "Use https, or localhost for a local server.";
+				}
+			} catch {
+				return "That is not a URL. It should look like https://ap.example.edu";
+			}
+			return undefined;
+		},
+	});
+	if (url === undefined) {
+		return;
+	}
+
+	const trimmed = url.trim();
+	// Checked before it is saved, so a typo is caught here rather than
+	// surfacing later as an unrelated-looking failure to sign in.
+	try {
+		await vscode.window.withProgress(
+			{ location: vscode.ProgressLocation.Notification, title: "Checking the access point" },
+			() => discover(trimmed)
+		);
+	} catch (err: unknown) {
+		const answer = await vscode.window.showWarningMessage(describe(err), "Save anyway", "Cancel");
+		if (answer !== "Save anyway") {
+			return;
+		}
+	}
+
+	await config.update("serverUrl", trimmed, vscode.ConfigurationTarget.Global);
+	await refreshContext();
+
+	// Straight into the sign-in: wanting the address saved and not
+	// wanting to sign in is not a real case, and leaving them to find
+	// the command themselves is the problem this is fixing.
+	await vscode.authentication.getSession(AUTH_PROVIDER_ID, [], { createIfNone: true });
+	await refreshContext();
+	jobs.refresh();
 }

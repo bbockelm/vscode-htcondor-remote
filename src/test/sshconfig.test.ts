@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
-import { Identity, renderConfig, writeSSHConfig } from "../sshconfig";
+import { Identity, chainTarget, configPaths, renderConfig, writeSSHConfig } from "../sshconfig";
 
 let dir: string;
 beforeEach(() => {
@@ -160,4 +160,45 @@ test("the files are not readable by anyone else", async () => {
 	for (const file of [paths.configFile, paths.knownHosts]) {
 		assert.equal(statSync(file).mode & 0o077, 0, `${file} is readable by others`);
 	}
+});
+
+// The bug that made a session open once and then never again.
+//
+// Connecting sets remote.SSH.configFile to our file, so the next
+// connection reads our own path back out of the setting and includes it
+// from inside itself. ssh follows that until it gives up:
+//
+//   Too many recursive configuration includes
+//
+// Observed against a real gateway on 2026-10-01.
+test("the config never includes itself", async () => {
+	const paths = configPaths(dir);
+	const text = renderConfig(
+		[{ alias: "condor-a", gatewayHost: "ap.example.edu", gatewayPort: 22, target: "1.0" }],
+		paths.knownHosts,
+		IDENTITY,
+		chainTarget(paths.configFile, paths.configFile)
+	);
+	assert.doesNotMatch(
+		text,
+		new RegExp(`Include\\\\s+"?${paths.configFile.replace(/[.*+?^${}()|[\]\\\\]/g, "\\\\$&")}`),
+		"the generated config includes itself"
+	);
+	assert.match(text, /Include .*\.ssh[/\\]config/, "it must still chain to the user's own config");
+});
+
+// Case-insensitively, because macOS and Windows are, and getting that
+// wrong reintroduces the recursion rather than merely being untidy.
+test("its own path is recognised however it is spelled", () => {
+	const ours = join(dir, "ssh_config");
+	assert.match(chainTarget(ours, ours), /\.ssh[/\\]config$/);
+	assert.match(chainTarget(ours.toUpperCase(), ours), /\.ssh[/\\]config$/);
+	assert.match(chainTarget(join(dir, ".", "ssh_config"), ours), /\.ssh[/\\]config$/);
+});
+
+// A file the user genuinely pointed the setting at must still be
+// chained, or their other Remote-SSH hosts stop resolving.
+test("someone else's config file is still chained", () => {
+	const ours = join(dir, "ssh_config");
+	assert.equal(chainTarget("/home/me/.ssh/work_config", ours), "/home/me/.ssh/work_config");
 });

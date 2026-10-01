@@ -88,6 +88,10 @@
         "command": "htcondor.openTerminal",
         "title": "Open a Shell in This Job",
         "icon": "$(terminal)"
+      },
+      {
+        "command": "htcondor.setup",
+        "title": "HTCondor: Connect to an Access Point"
       }
     ],
     "authentication": [
@@ -97,10 +101,10 @@
       }
     ],
     "views": {
-      "explorer": [
+      "htcondor": [
         {
           "id": "htcondor.jobs",
-          "name": "HTCondor Jobs"
+          "name": "Jobs"
         }
       ]
     },
@@ -144,13 +148,37 @@
           "group": "inline"
         }
       ]
-    }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "htcondor",
+          "title": "HTCondor",
+          "icon": "media/htcondor.svg"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "htcondor.jobs",
+        "when": "!htcondor.configured",
+        "contents": "Connect to an HTCondor access point to see your jobs, open a shell in one, or run VS Code inside one.\n[Connect to an access point](command:htcondor.setup)\n"
+      },
+      {
+        "view": "htcondor.jobs",
+        "when": "htcondor.configured && !htcondor.signedIn",
+        "contents": "[Sign in](command:htcondor.signIn)\n"
+      },
+      {
+        "view": "htcondor.jobs",
+        "when": "htcondor.configured && htcondor.signedIn",
+        "contents": "No jobs in the queue.\n[Submit a file](command:htcondor.submit)\n[Refresh](command:htcondor.refreshJobs)\n"
+      }
+    ]
   },
   "activationEvents": [
     "onView:htcondor.jobs",
-    "onCommand:htcondor.connect",
-    "onCommand:htcondor.signIn",
-    "onCommand:htcondor.submit"
+    "onCommand:htcondor.setup"
   ],
   "dependencies": {
     "ws": "^8.22.0"

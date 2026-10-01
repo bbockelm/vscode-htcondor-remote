@@ -8,7 +8,7 @@
 
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 /** Where to reach a job. */
 export interface HostSpec {
@@ -64,7 +64,7 @@ export async function writeSSHConfig(
 
 	await writeFile(
 		paths.configFile,
-		renderConfig(hosts, paths.knownHosts, identity, chainTarget(chainedConfig)),
+		renderConfig(hosts, paths.knownHosts, identity, chainTarget(chainedConfig, paths.configFile)),
 		{ mode: 0o600 }
 	);
 	// As with the key files: writeFile applies its mode only when it
@@ -112,13 +112,32 @@ export function renderConfig(
  * included or their other hosts stop resolving. Defaulting straight to
  * `~/.ssh/config` would silently drop a file they had already pointed
  * the setting at.
+ *
+ * `ourConfig` is excluded, and that is not defensive tidying -- it is
+ * the bug this argument exists for. Connecting sets
+ * `remote.SSH.configFile` to our file, so the NEXT connection reads our
+ * own path back out of the setting and includes it from inside itself.
+ * ssh follows that until it gives up with "Too many recursive
+ * configuration includes", and the session never opens. Everything
+ * works once and then stops, which is the worst shape of bug to meet.
  */
-export function chainTarget(existingSetting: string | undefined): string {
+export function chainTarget(existingSetting: string | undefined, ourConfig: string): string {
 	const existing = (existingSetting ?? "").trim();
-	if (existing !== "" && existing !== defaultUserConfig()) {
-		return existing;
+	if (existing === "" || samePath(existing, ourConfig)) {
+		return defaultUserConfig();
 	}
-	return defaultUserConfig();
+	return existing;
+}
+
+/** Whether two paths name the same file, as far as can be told. */
+function samePath(a: string, b: string): boolean {
+	const normalise = (p: string): string => resolve(p.replace(/^~(?=\/|\\|$)/, homedir()));
+	const left = normalise(a);
+	const right = normalise(b);
+	// macOS and Windows are case-insensitive in practice, and getting
+	// this wrong reintroduces the recursion rather than merely being
+	// untidy.
+	return left === right || left.toLowerCase() === right.toLowerCase();
 }
 
 function defaultUserConfig(): string {
