@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import { JobSummary } from "../api";
 import { groupByStatus, jobContext, jobLabel, jobTooltip } from "../jobsModel";
+import { jobsMessage } from "../jobsStatus";
 
 function job(cluster: number, status: number, extra: Partial<JobSummary> = {}): JobSummary {
 	return { cluster, proc: 0, status, ...extra };
@@ -80,4 +81,25 @@ test("each status gets its own context value", () => {
 	// An unknown status must not land on `running`, or it inherits
 	// every action that needs a live job.
 	assert.notEqual(jobContext(job(1, 99)), "htcondor.job.running");
+});
+
+// An empty tree means "no jobs", "never asked" and "asked and failed",
+// and those are three different things a user has to tell apart. Only
+// the first of them should look like an empty queue.
+test("the view says when it has not loaded, or could not", () => {
+	assert.match(jobsMessage({ kind: "never-loaded" })!, /not loaded/i);
+	assert.match(jobsMessage({ kind: "loading" })!, /loading/i);
+	assert.match(jobsMessage({ kind: "failed", detail: "connection refused" })!, /connection refused/);
+
+	// And says nothing once a listing really has come back empty: the
+	// welcome view covers that better than a message bar.
+	assert.equal(jobsMessage({ kind: "loaded", count: 0 }), undefined);
+	assert.equal(jobsMessage({ kind: "loaded", count: 12 }), undefined);
+});
+
+// The reason has to reach the user. "Could not load" on its own leaves
+// them with nothing to do about it.
+test("a failure names its reason", () => {
+	const message = jobsMessage({ kind: "failed", detail: "the access point refused the request (403)" })!;
+	assert.match(message, /403/);
 });

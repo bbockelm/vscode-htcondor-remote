@@ -17,6 +17,7 @@ import { CertificateManager, CHECK_INTERVAL_MS, KeyStore } from "./certificate";
 import { JobNode } from "./jobsModel";
 import { JOB_DETAILS_SCHEME, JobDetailsProvider } from "./jobDetails";
 import { JobsProvider } from "./jobsView";
+import { jobsMessage } from "./jobsStatus";
 import { JobWatch } from "./watch";
 import { JobLogs } from "./logsView";
 import { planSubmit, submitWarning } from "./submit";
@@ -75,6 +76,11 @@ export function activate(context: vscode.ExtensionContext): void {
 			// changes. An access point with no mirror is a deployment
 			// choice, so this is the normal path there and not an error.
 			if (!pollTimer) {
+				// At once, then on a timer. setInterval alone leaves the
+				// view blank for the whole first interval, which is
+				// exactly the window in which a user decides the
+				// extension is broken.
+				jobs.refresh();
 				pollTimer = setInterval(() => jobs.refresh(), reason === "unauthorized" ? 60_000 : 15_000);
 			}
 		},
@@ -138,6 +144,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	);
 
 	const jobs = new JobsProvider(api, output);
+	const jobsView = vscode.window.createTreeView("htcondor.jobs", { treeDataProvider: jobs });
 	const logs = new JobLogs(api, output);
 	const details = new JobDetailsProvider(api);
 	context.subscriptions.push(
@@ -173,7 +180,21 @@ export function activate(context: vscode.ExtensionContext): void {
 				logs.show(jobId(node.job));
 			}
 		}),
-		vscode.window.registerTreeDataProvider("htcondor.jobs", jobs),
+		// createTreeView rather than registerTreeDataProvider, for the
+		// message bar: an empty tree alone cannot say whether the queue
+		// is empty, the view has never asked, or asking failed.
+		jobsView,
+		jobs.onDidChangeState((state) => {
+			const message = jobsMessage(state);
+			// Assigned conditionally because the typing forbids
+			// undefined, while clearing the bar is exactly what a
+			// successful load should do.
+			if (message === undefined) {
+				delete (jobsView as { message?: string }).message;
+			} else {
+				jobsView.message = message;
+			}
+		}),
 		vscode.commands.registerCommand("htcondor.refreshJobs", () => jobs.refresh()),
 		vscode.commands.registerCommand("htcondor.signIn", async () => {
 			await vscode.authentication.getSession(AUTH_PROVIDER_ID, [], { createIfNone: true });
