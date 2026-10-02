@@ -54,6 +54,26 @@ export interface Tokens {
  */
 export const SCOPES = ["condor:/WRITE", "offline_access"];
 
+/**
+ * A refusal from the token endpoint, with the reason kept.
+ *
+ * `fatal` means this grant will never work again, however many times it
+ * is retried: the refresh token is spent, revoked, or the grant no
+ * longer carries the scopes the client needs. The only cure is signing
+ * in again, so a caller that keeps retrying is burning the user's time
+ * instead of telling them.
+ */
+export class TokenError extends Error {
+	constructor(
+		message: string,
+		readonly code: string,
+		readonly fatal: boolean
+	) {
+		super(message);
+		this.name = "TokenError";
+	}
+}
+
 export async function discover(baseUrl: string, fetchImpl: typeof fetch = fetch): Promise<Discovery> {
 	const url = new URL("/.well-known/oauth-authorization-server", baseUrl);
 	const response = await fetchImpl(url, { headers: { Accept: "application/json" } });
@@ -311,7 +331,14 @@ async function tokenRequest(
 	});
 	const text = await response.text();
 	if (!response.ok) {
-		throw new Error(describeTokenFailure(response.status, text));
+		const code = errorCode(text);
+		// invalid_grant: the refresh token is spent or revoked.
+		// invalid_scope: the grant no longer covers what this client
+		// asks for -- most often because offline_access was never
+		// granted, without which no refresh is permitted at all.
+		// Neither improves by being retried.
+		const fatal = code === "invalid_grant" || code === "invalid_scope";
+		throw new TokenError(describeTokenFailure(response.status, text), code, fatal);
 	}
 
 	const body = JSON.parse(text) as {
@@ -335,15 +362,52 @@ async function tokenRequest(
 
 function describeTokenFailure(status: number, body: string): string {
 	let code = "";
+	let description = "";
 	try {
-		code = String((JSON.parse(body) as { error?: unknown }).error ?? "");
+		const parsed = JSON.parse(body) as { error?: unknown; error_description?: unknown; hint?: unknown };
+		code = typeof parsed.error === "string" ? parsed.error : "";
+		// error_description is where the server says WHICH scope, or
+		// which part of the grant it objected to. Reporting only the
+		// code throws away the one sentence that identifies the
+		// problem, and leaves "invalid_scope" meaning nothing at all --
+		// which is exactly how an hour went missing.
+		for (const field of [parsed.error_description, parsed.hint]) {
+			if (typeof field === "string" && field.trim() !== "") {
+				description = field.trim();
+				break;
+			}
+		}
 	} catch {
 		// Not JSON; the status carries what there is to say.
 	}
+
 	if (code === "invalid_grant") {
 		// The case a user meets: a refresh token that expired or was
 		// revoked. "invalid_grant" tells them nothing.
 		return "This sign-in is no longer valid. Signing in again will fix it.";
 	}
-	return `The access point refused the token request (${status})${code ? `: ${code}` : ""}`;
+	if (code === "invalid_scope") {
+		// Almost always a grant that no longer covers what this client
+		// asks for -- scopes narrowed on the server, or a consent that
+		// did not include offline_access, without which no refresh is
+		// permitted at all.
+		return (
+			"This sign-in no longer covers what the extension needs" +
+			(description ? `: ${description}` : "") +
+			". Signing out and in again usually fixes it."
+		);
+	}
+
+	const parts = [code, description].filter((p) => p !== "");
+	return `The access point refused the token request (${status})${parts.length ? `: ${parts.join(" — ")}` : ""}`;
+}
+
+/** The OAuth2 error code in a failure body, if there is one. */
+function errorCode(body: string): string {
+	try {
+		const parsed = JSON.parse(body) as { error?: unknown };
+		return typeof parsed.error === "string" ? parsed.error : "";
+	} catch {
+		return "";
+	}
 }

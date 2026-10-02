@@ -4,7 +4,7 @@
 // tested: the refresh path has a failure mode that only shows up under
 // concurrency, and reproducing it inside an editor is not practical.
 
-import { Tokens } from "./oauth2";
+import { TokenError, Tokens } from "./oauth2";
 
 /** The slice of vscode.SecretStorage this needs. */
 export interface SecretStore {
@@ -112,8 +112,21 @@ export class TokenStore {
 	}
 
 	private async doRefresh(refreshToken: string): Promise<string> {
-		const { tokens, account } = await this.refresh(refreshToken);
-		await this.write(tokens, account, refreshToken);
-		return tokens.accessToken;
+		let result;
+		try {
+			result = await this.refresh(refreshToken);
+		} catch (err: unknown) {
+			// A grant that cannot be refreshed is cleared, not kept.
+			// Keeping it means every call from here on fails the same
+			// way for ever -- which is what it did: a warning in a log
+			// nobody had found, every two and a half minutes, with
+			// nothing in the UI suggesting the one thing that fixes it.
+			if (err instanceof TokenError && err.fatal) {
+				await this.clear();
+			}
+			throw err;
+		}
+		await this.write(result.tokens, result.account, refreshToken);
+		return result.tokens.accessToken;
 	}
 }

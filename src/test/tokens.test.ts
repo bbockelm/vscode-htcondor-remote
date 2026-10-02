@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 
-import { Tokens } from "../oauth2";
+import { TokenError, Tokens } from "../oauth2";
 import { REFRESH_BEFORE_MS, SecretStore, TOKENS_KEY, TokenStore } from "../tokens";
 
 class MemorySecrets implements SecretStore {
@@ -168,4 +168,47 @@ test("a token with no expiry is used as-is", async () => {
 	});
 	assert.equal(await store.token(), "old");
 	assert.equal(refreshed, 0);
+});
+
+// A grant that cannot be refreshed must not be kept.
+//
+// Keeping it means every call from here on fails the same way for
+// ever. That is what it did: a warning in a log nobody had found,
+// every two and a half minutes, with nothing in the UI suggesting the
+// one thing that fixes it.
+test("a dead grant is cleared so the user can sign in again", async () => {
+	for (const code of ["invalid_grant", "invalid_scope"]) {
+		const secrets = new MemorySecrets();
+		seed(secrets, 0);
+		const store = new TokenStore(secrets, async () => {
+			throw new TokenError("nope", code, true);
+		});
+
+		await assert.rejects(store.token());
+		assert.equal(await store.read(), undefined, `${code} left a grant that can never work`);
+	}
+});
+
+// A blip is not a dead grant. Clearing on one would sign the user out
+// every time their wifi dropped.
+test("a transient failure keeps the session", async () => {
+	const secrets = new MemorySecrets();
+	seed(secrets, 0);
+	const store = new TokenStore(secrets, async () => {
+		throw new Error("getaddrinfo ENOTFOUND");
+	});
+
+	await assert.rejects(store.token());
+	assert.ok(await store.read(), "a network error signed the user out");
+});
+
+test("a non-fatal token error also keeps the session", async () => {
+	const secrets = new MemorySecrets();
+	seed(secrets, 0);
+	const store = new TokenStore(secrets, async () => {
+		throw new TokenError("busy", "temporarily_unavailable", false);
+	});
+
+	await assert.rejects(store.token());
+	assert.ok(await store.read());
 });

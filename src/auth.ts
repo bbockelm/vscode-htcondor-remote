@@ -83,7 +83,19 @@ export class HTCondorAuthProvider implements vscode.AuthenticationProvider, vsco
 	 * concurrent callers.
 	 */
 	async token(): Promise<string> {
-		return this.tokens.token();
+		const before = await this.tokens.read();
+		try {
+			return await this.tokens.token();
+		} catch (err: unknown) {
+			// The store clears a grant that cannot be refreshed. Saying
+			// so here is what turns a dead session into a visible one:
+			// the accounts menu drops it, and the view flips to "Sign
+			// in" instead of looking signed in and failing everything.
+			if (before && !(await this.tokens.read())) {
+				this.changed.fire({ added: [], removed: [this.toSession(before)], changed: [] });
+			}
+			throw err;
+		}
 	}
 
 	private async refresh(refreshToken: string): Promise<{ tokens: Tokens; account: string }> {

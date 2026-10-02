@@ -228,3 +228,42 @@ test("an expired refresh token says to sign in again", async () => {
 		/Signing in again will fix it/
 	);
 });
+
+// error_description is where the server says WHICH scope, or which
+// part of the grant it objected to. Reporting only the code throws away
+// the one sentence that identifies the problem, and leaves
+// "invalid_scope" meaning nothing at all.
+test("the server's own explanation is not thrown away", async () => {
+	await assert.rejects(
+		refreshTokens(
+			DISCOVERY,
+			{ clientId: "c" },
+			"rt",
+			jsonFetch(400, {
+				error: "invalid_scope",
+				error_description:
+					"The OAuth 2.0 Client was not granted scope offline and may thus not perform the 'refresh_token' authorization grant.",
+			})
+		),
+		/was not granted scope offline/
+	);
+});
+
+test("an unrecognised error still reports both halves", async () => {
+	await assert.rejects(
+		refreshTokens(
+			DISCOVERY,
+			{ clientId: "c" },
+			"rt",
+			jsonFetch(400, { error: "unsupported_grant_type", error_description: "nope" })
+		),
+		/unsupported_grant_type — nope/
+	);
+});
+
+test("a hint is used when there is no description", async () => {
+	await assert.rejects(
+		refreshTokens(DISCOVERY, { clientId: "c" }, "rt", jsonFetch(400, { error: "invalid_scope", hint: "a hint" })),
+		/a hint/
+	);
+});
