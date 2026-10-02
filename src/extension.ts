@@ -17,6 +17,7 @@ import { CertificateManager, CHECK_INTERVAL_MS, KeyStore } from "./certificate";
 import { JobNode } from "./jobsModel";
 import { JOB_DETAILS_SCHEME, JobDetailsProvider } from "./jobDetails";
 import { JobsProvider } from "./jobsView";
+import { JobWatch } from "./watch";
 import { JobLogs } from "./logsView";
 import { planSubmit, submitWarning } from "./submit";
 import { JobTerminal } from "./terminal";
@@ -52,6 +53,58 @@ export function activate(context: vscode.ExtensionContext): void {
 	// after a network blip or a laptop waking -- at which point nothing
 	// in this extension is on the call stack to notice the credential
 	// has lapsed.
+	// Follow the queue, so the tree reflects it without being asked.
+	//
+	// Changes are coalesced: a cluster of a thousand jobs produces a
+	// thousand events in a moment, and re-reading the queue for each
+	// would be a denial of service aimed at ourselves.
+	let pending: NodeJS.Timeout | undefined;
+	const watch = new JobWatch(serverUrl(), () => auth.token(), {
+		onChange: () => {
+			if (pending) {
+				return;
+			}
+			pending = setTimeout(() => {
+				pending = undefined;
+				jobs.refresh();
+			}, 400);
+		},
+		onUnavailable: (reason, detail) => {
+			output.info(`Not following job changes: ${detail}`);
+			// Fall back to asking, rather than leaving a tree that never
+			// changes. An access point with no mirror is a deployment
+			// choice, so this is the normal path there and not an error.
+			if (!pollTimer) {
+				pollTimer = setInterval(() => jobs.refresh(), reason === "unauthorized" ? 60_000 : 15_000);
+			}
+		},
+		onRetry: (detail, delayMs) => {
+			output.warn(`Job stream dropped (${detail}); reconnecting in ${Math.round(delayMs / 1000)}s`);
+		},
+	});
+	let pollTimer: NodeJS.Timeout | undefined;
+	context.subscriptions.push({
+		dispose: () => {
+			watch.close();
+			if (pending) {
+				clearTimeout(pending);
+			}
+			if (pollTimer) {
+				clearInterval(pollTimer);
+			}
+		},
+	});
+	// Only once there is a session to stream with; starting before that
+	// would spend a reconnect cycle on a 401.
+	const startWatching = async (): Promise<void> => {
+		const sessions = await auth.getSessions();
+		if (sessions.length > 0) {
+			watch.start();
+		}
+	};
+	void startWatching();
+	context.subscriptions.push(auth.onDidChangeSessions(() => void startWatching()));
+
 	const renewal = setInterval(() => {
 		void certificates.ensure().catch((err: unknown) => {
 			// Logged, not shown. A failed background renewal is not
