@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 
-import { PRESETS, describeSpec, isReady, isStuck, parseSize } from "../sessions";
+import { HOLD_SPOOLING_INPUT, PRESETS, describeSpec, isReady, isStuck, parseSize } from "../sessions";
 
 // Smallest first, because it matches first: a session that starts now
 // beats a bigger one that starts in twenty minutes.
@@ -43,8 +43,7 @@ test("the summary reads naturally", () => {
 
 // Polling past a terminal state waits forever, which presents as a
 // session that is "starting" until the user gives up.
-test("held, removed and completed are stuck; running is ready", () => {
-	assert.equal(isStuck(5), true, "Held");
+test("removed and completed are stuck; running is ready", () => {
 	assert.equal(isStuck(3), true, "Removed");
 	assert.equal(isStuck(4), true, "Completed");
 	assert.equal(isStuck(1), false, "Idle is still on its way");
@@ -52,4 +51,26 @@ test("held, removed and completed are stuck; running is ready", () => {
 
 	assert.equal(isReady(2), true);
 	assert.equal(isReady(1), false);
+});
+
+// The exception that is the common case, not a corner. EVERY submission
+// is written into the queue held on this code while its input spools,
+// and the schedd releases it by itself moments later. Treating it as
+// terminal reported a healthy session as having "stopped before it
+// started", about a second after creating it.
+test("a hold for spooling input is not stuck", () => {
+	assert.equal(isStuck(5, HOLD_SPOOLING_INPUT), false, "spooling is how every submission begins");
+	assert.equal(HOLD_SPOOLING_INPUT, 16, "CONDOR_HOLD_CODE::SpoolingInput");
+});
+
+// Every other hold still is. A session held because its image does not
+// exist will never start, and waiting out the full timeout for it helps
+// nobody.
+test("any other hold is stuck", () => {
+	assert.equal(isStuck(5, 13), true, "some other hold code");
+	assert.equal(isStuck(5, 1), true, "held by the user");
+	// Unknown code, which is what an older server that does not report
+	// one looks like. Held with no further information is treated as
+	// terminal, because that is what it usually is.
+	assert.equal(isStuck(5, undefined), true);
 });

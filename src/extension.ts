@@ -580,7 +580,7 @@ async function waitForSession(
 			if (isReady(session.status)) {
 				return true;
 			}
-			if (isStuck(session.status)) {
+			if (isStuck(session.status, session.holdReasonCode)) {
 				await report(
 					output,
 					`Session ${jobId} stopped before it started`,

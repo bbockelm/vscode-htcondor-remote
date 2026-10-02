@@ -187,3 +187,27 @@ test("a session list with the wrong key reads as empty, not as a crash", async (
 	const api = recordingApi(seen, 200, JSON.stringify({ somethingElse: [] }));
 	assert.deepEqual(await api.listSessions(), []);
 });
+
+// The hold CODE has to survive the parse, not just the reason text:
+// one hold is not a failure, and prose is the wrong thing to decide on.
+test("a session's hold code is read, not just its reason", async () => {
+	const seen: Seen = {};
+	const api = recordingApi(
+		seen,
+		200,
+		JSON.stringify({
+			terminals: [
+				{
+					instance_id: "abc",
+					job_id: "12.0",
+					job_status: 5,
+					hold_reason: "Spooling input data files",
+					hold_reason_code: 16,
+				},
+			],
+		})
+	);
+	const [session] = await api.listSessions();
+	assert.equal(session!.holdReasonCode, 16);
+	assert.equal(session!.holdReason, "Spooling input data files");
+});

@@ -230,6 +230,7 @@ export class HTCondorApi {
 			status: typeof raw.job_status === "number" ? raw.job_status : 0,
 			batchName: String(raw.batch_name ?? ""),
 			...(raw.hold_reason ? { holdReason: String(raw.hold_reason) } : {}),
+			...(typeof raw.hold_reason_code === "number" ? { holdReasonCode: raw.hold_reason_code } : {}),
 		}));
 	}
 
@@ -459,4 +460,13 @@ export interface SessionSummary {
 	status: number;
 	batchName: string;
 	holdReason?: string;
+	/**
+	 * HTCondor's HoldReasonCode.
+	 *
+	 * Needed as well as the text, because one hold is not a failure:
+	 * every submission is written into the queue held on code 16 while
+	 * its input spools, and the schedd releases it by itself. Reading
+	 * only the reason string means guessing from prose.
+	 */
+	holdReasonCode?: number;
 }

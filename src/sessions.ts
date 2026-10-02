@@ -90,11 +90,32 @@ export function describeSpec(spec: SessionSpec): string {
 	return parts.join(", ");
 }
 
-/** HTCondor job statuses that mean "not going to start by itself". */
-export function isStuck(status: number): boolean {
-	// Held, removed and completed are all terminal for a session that
-	// was waiting to run. Polling past them waits forever.
-	return status === 3 || status === 4 || status === 5;
+/**
+ * HTCondor's hold code for a job whose input is still spooling.
+ *
+ * `CONDOR_HOLD_CODE::SpoolingInput` in condor_holdcodes.h.
+ */
+export const HOLD_SPOOLING_INPUT = 16;
+
+/**
+ * Whether a session will not start on its own.
+ *
+ * Removed and completed are terminal. Held usually is too -- but not
+ * always, and the exception is the common case rather than a corner:
+ * EVERY submission is written into the queue held on
+ * HOLD_SPOOLING_INPUT while its input spools, and the schedd releases
+ * it by itself moments later. Treating that as terminal reports a
+ * perfectly healthy session as having "stopped before it started",
+ * about a second after creating it.
+ */
+export function isStuck(status: number, holdReasonCode?: number): boolean {
+	if (status === 3 || status === 4) {
+		return true;
+	}
+	if (status !== 5) {
+		return false;
+	}
+	return holdReasonCode !== HOLD_SPOOLING_INPUT;
 }
 
 /** Whether a session is ready to connect to. */
