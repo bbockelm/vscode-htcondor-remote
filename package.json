@@ -102,6 +102,10 @@
         "command": "htcondor.showExtensionLog",
         "title": "HTCondor: Show Extension Log",
         "icon": "$(output)"
+      },
+      {
+        "command": "htcondor.signOut",
+        "title": "HTCondor: Sign Out"
       }
     ],
     "authentication": [
@@ -134,6 +138,11 @@
           "command": "htcondor.showExtensionLog",
           "when": "view == htcondor.jobs",
           "group": "navigation@9"
+        },
+        {
+          "command": "htcondor.signOut",
+          "when": "view == htcondor.jobs && htcondor.signedIn",
+          "group": "overflow@1"
         }
       ],
       "view/item/context": [

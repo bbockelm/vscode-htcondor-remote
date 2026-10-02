@@ -23,7 +23,7 @@
 // needs no server change.
 
 import { createPublicKey } from "node:crypto";
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { HTCondorApi } from "./api";
@@ -149,6 +149,29 @@ export class CertificateManager {
 
 		this.validBefore = cert.validBefore;
 		return paths;
+	}
+
+	/**
+	 * Remove the key and certificate from disk.
+	 *
+	 * Signing out should not leave a usable credential behind. The
+	 * certificate outlives the session otherwise -- up to its full
+	 * lifetime -- and anything that can read the file can still open a
+	 * shell in the user's jobs with it.
+	 */
+	async forget(): Promise<void> {
+		this.validBefore = undefined;
+		const paths = this.paths;
+		await Promise.all(
+			[paths.privateKey, paths.certificate, paths.knownHosts].map(async (file) => {
+				try {
+					await rm(file, { force: true });
+				} catch {
+					// Best effort. A file that cannot be removed is
+					// worth neither failing the sign-out nor a dialog.
+				}
+			})
+		);
 	}
 
 	/** When the certificate on hand expires, if there is one. */

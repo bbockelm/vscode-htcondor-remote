@@ -67,6 +67,18 @@ export class HTCondorAuthProvider implements vscode.AuthenticationProvider, vsco
 		return session;
 	}
 
+	/**
+	 * Sign out, for a caller that is not the accounts menu.
+	 *
+	 * VS Code offers its own sign-out there, but only once an extension
+	 * has asked for the session -- so a user who has not opened
+	 * anything yet has no way to undo a sign-in. This is the same
+	 * thing, reachable from the view they are already looking at.
+	 */
+	async signOut(): Promise<void> {
+		await this.removeSession(AUTH_PROVIDER_ID);
+	}
+
 	async removeSession(_sessionId: string): Promise<void> {
 		const stored = await this.tokens.read();
 		await this.tokens.clear();

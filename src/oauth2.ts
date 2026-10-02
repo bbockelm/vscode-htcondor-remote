@@ -197,31 +197,41 @@ export async function awaitRedirect(state: string): Promise<Redirect> {
 
 	const server: Server = createServer((req, res) => {
 		const url = new URL(req.url ?? "/", "http://127.0.0.1");
-		const reply = (status: number, message: string) => {
-			res.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
-			res.end(`<!doctype html><meta charset="utf-8"><title>HTCondor</title><p>${message}`);
+		const reply = (status: number, heading: string, message: string, tone: Tone = "ok") => {
+			res.writeHead(status, {
+				"Content-Type": "text/html; charset=utf-8",
+				// This page is the last thing an authorization code
+				// touches; nothing should keep a copy of it.
+				"Cache-Control": "no-store",
+			});
+			res.end(callbackPage(heading, message, tone));
 		};
 
 		const error = url.searchParams.get("error");
 		if (error) {
 			const description = url.searchParams.get("error_description") ?? "";
-			reply(400, "Sign-in failed. You can close this tab and try again in VS Code.");
+			reply(400, "Sign-in failed", "You can close this tab and try again in VS Code.", "error");
 			fail(new Error(`The access point refused the sign-in: ${error} ${description}`.trim()));
 			return;
 		}
 		if (url.searchParams.get("state") !== state) {
 			// Not our redirect. Answering with the code would mean
 			// exchanging one this flow never asked for.
-			reply(400, "This sign-in did not come from VS Code.");
+			reply(
+				400,
+				"Not this window",
+				"This sign-in did not come from the VS Code window that is waiting. Start it again from the editor.",
+				"error"
+			);
 			return;
 		}
 		const received = url.searchParams.get("code");
 		if (!received) {
-			reply(400, "The access point returned no authorization code.");
+			reply(400, "Sign-in failed", "The access point returned no authorization code.", "error");
 			fail(new Error("The access point returned no authorization code"));
 			return;
 		}
-		reply(200, "Signed in. You can close this tab and return to VS Code.");
+		reply(200, "Signed in", "You can close this tab and return to VS Code.", "ok");
 		settle(received);
 	});
 
@@ -410,4 +420,69 @@ function errorCode(body: string): string {
 	} catch {
 		return "";
 	}
+}
+
+type Tone = "ok" | "error";
+
+/**
+ * The page the browser lands on after authorizing.
+ *
+ * Styled to match the access point's own standalone pages -- the same
+ * gradient, card and type -- because it is the only page in this flow
+ * the extension serves, and a plain-HTML interruption between two
+ * designed pages reads as something having gone wrong.
+ *
+ * Entirely self-contained: it is served from a loopback port that
+ * closes seconds later, so it cannot reference a stylesheet, and
+ * should not reach the network for a font either.
+ */
+export function callbackPage(heading: string, message: string, tone: Tone): string {
+	const accent = tone === "ok" ? "#2f9e68" : "#c0392b";
+	const glyph = tone === "ok" ? "&#10003;" : "&#33;";
+	return `<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HTCondor</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  .card {
+    background: #fff; border-radius: 12px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+    max-width: 440px; width: 100%; padding: 40px; text-align: center;
+  }
+  .mark {
+    width: 56px; height: 56px; border-radius: 50%;
+    background: ${accent}; color: #fff;
+    font-size: 30px; line-height: 56px; margin: 0 auto 20px;
+  }
+  h1 { color: #333; font-size: 24px; margin-bottom: 10px; }
+  p { color: #666; font-size: 14px; line-height: 1.6; }
+  .hint { color: #999; font-size: 12px; margin-top: 24px; }
+</style>
+<div class="card">
+  <div class="mark">${glyph}</div>
+  <h1>${escapeHTML(heading)}</h1>
+  <p>${escapeHTML(message)}</p>
+  <p class="hint">HTCondor for VS Code</p>
+</div>
+`;
+}
+
+/** Escape text for HTML. Nothing here is attacker-controlled today,
+ * but a message assembled from a server's error field one day would
+ * be, and remembering at that point is not something to rely on. */
+function escapeHTML(text: string): string {
+	return text
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;");
 }

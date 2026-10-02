@@ -4,6 +4,7 @@ import { test } from "node:test";
 
 import {
 	authorizationUrl,
+	callbackPage,
 	awaitRedirect,
 	Discovery,
 	discover,
@@ -266,4 +267,35 @@ test("a hint is used when there is no description", async () => {
 		refreshTokens(DISCOVERY, { clientId: "c" }, "rt", jsonFetch(400, { error: "invalid_scope", hint: "a hint" })),
 		/a hint/
 	);
+});
+
+test("the callback page is self-contained", () => {
+	const page = callbackPage("Signed in", "You can close this tab.", "ok");
+	// Served from a loopback port that closes seconds later, so it
+	// cannot reference a stylesheet -- and should not fetch a font
+	// either, which would leak the visit.
+	assert.doesNotMatch(page, /<link\b/i);
+	assert.doesNotMatch(page, /https?:\/\//);
+	assert.doesNotMatch(page, /<script\b/i);
+	// The house style the access point's own pages use.
+	assert.match(page, /#667eea/);
+	assert.match(page, /Signed in/);
+});
+
+test("the callback page escapes what it renders", () => {
+	const page = callbackPage("<script>alert(1)</script>", 'a "quoted" & <tagged> message', "error");
+	assert.doesNotMatch(page, /<script>alert/);
+	assert.match(page, /&lt;script&gt;/);
+	assert.match(page, /&quot;quoted&quot;/);
+	assert.match(page, /&amp;/);
+});
+
+test("success and failure look different", () => {
+	const ok = callbackPage("Signed in", "done", "ok");
+	const bad = callbackPage("Sign-in failed", "nope", "error");
+	assert.notEqual(ok, bad);
+	// Colour alone is not the only difference, for anyone who cannot
+	// see it.
+	assert.match(ok, /Signed in/);
+	assert.match(bad, /Sign-in failed/);
 });

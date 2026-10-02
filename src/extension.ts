@@ -114,6 +114,16 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand("htcondor.newSession", () =>
 			newSession(api, certificates, jobs, output)
 		),
+		vscode.commands.registerCommand("htcondor.signOut", async () => {
+			await auth.signOut();
+			// The certificate outlives the session otherwise, and
+			// anything that can read it can still reach the user's
+			// jobs.
+			await certificates.forget();
+			await setContext();
+			jobs.refresh();
+			void vscode.window.showInformationMessage("Signed out of HTCondor.");
+		}),
 		vscode.commands.registerCommand("htcondor.showExtensionLog", () => output.show(true)),
 		vscode.commands.registerCommand("htcondor.setup", () => setup(jobs, setContext)),
 		vscode.commands.registerCommand("htcondor.submit", () => submitActiveEditor(api, jobs, output)),
