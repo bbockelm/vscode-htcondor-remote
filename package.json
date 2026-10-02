@@ -211,5 +211,6 @@
   ],
   "dependencies": {
     "ws": "^8.22.0"
-  }
+  },
+  "icon": "media/icon.png"
 }
