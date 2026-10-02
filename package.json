@@ -106,6 +106,11 @@
       {
         "command": "htcondor.signOut",
         "title": "HTCondor: Sign Out"
+      },
+      {
+        "command": "htcondor.showJobDetails",
+        "title": "Show Job Details",
+        "icon": "$(info)"
       }
     ],
     "authentication": [
@@ -148,33 +153,38 @@
       "view/item/context": [
         {
           "command": "htcondor.connectToJob",
-          "when": "view == htcondor.jobs && viewItem == htcondor.job",
-          "group": "inline"
+          "when": "view == htcondor.jobs && viewItem == htcondor.job.running",
+          "group": "inline@1"
+        },
+        {
+          "command": "htcondor.openTerminal",
+          "when": "view == htcondor.jobs && viewItem == htcondor.job.running",
+          "group": "inline@2"
+        },
+        {
+          "command": "htcondor.showLogs",
+          "when": "view == htcondor.jobs && viewItem == htcondor.job.running",
+          "group": "inline@3"
+        },
+        {
+          "command": "htcondor.showJobDetails",
+          "when": "view == htcondor.jobs && viewItem =~ /^htcondor\\.job\\./",
+          "group": "inline@4"
         },
         {
           "command": "htcondor.holdJob",
-          "when": "view == htcondor.jobs && viewItem == htcondor.job",
+          "when": "view == htcondor.jobs && (viewItem == htcondor.job.idle || viewItem == htcondor.job.running)",
           "group": "1_actions"
         },
         {
           "command": "htcondor.releaseJob",
-          "when": "view == htcondor.jobs && viewItem == htcondor.job",
+          "when": "view == htcondor.jobs && viewItem == htcondor.job.held",
           "group": "1_actions"
         },
         {
           "command": "htcondor.removeJob",
-          "when": "view == htcondor.jobs && viewItem == htcondor.job",
+          "when": "view == htcondor.jobs && (viewItem == htcondor.job.idle || viewItem == htcondor.job.running || viewItem == htcondor.job.held)",
           "group": "9_danger"
-        },
-        {
-          "command": "htcondor.showLogs",
-          "when": "view == htcondor.jobs && viewItem == htcondor.job",
-          "group": "inline"
-        },
-        {
-          "command": "htcondor.openTerminal",
-          "when": "view == htcondor.jobs && viewItem == htcondor.job",
-          "group": "inline"
         }
       ]
     },

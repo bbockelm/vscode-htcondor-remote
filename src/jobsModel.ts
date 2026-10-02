@@ -76,3 +76,27 @@ export function jobTooltip(job: JobSummary): string {
 	}
 	return lines.join("\n");
 }
+
+/**
+ * The tree item context value for a job, which the menus gate on.
+ *
+ * Per status, because most actions only make sense for some. Offering
+ * "open a window in this job" on a completed one is not a small
+ * untidiness: there is nothing to connect to, so the only thing the
+ * menu entry can do is fail.
+ */
+export function jobContext(job: JobSummary): string {
+	switch (job.status) {
+		case 1:
+			return "htcondor.job.idle";
+		case 2:
+			return "htcondor.job.running";
+		case 5:
+			return "htcondor.job.held";
+		case 3:
+		case 4:
+			return "htcondor.job.finished";
+		default:
+			return "htcondor.job.other";
+	}
+}

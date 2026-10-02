@@ -15,6 +15,7 @@ import { SessionSpec } from "./api";
 import { AUTH_PROVIDER_ID, HTCondorAuthProvider } from "./auth";
 import { CertificateManager, CHECK_INTERVAL_MS, KeyStore } from "./certificate";
 import { JobNode } from "./jobsModel";
+import { JOB_DETAILS_SCHEME, JobDetailsProvider } from "./jobDetails";
 import { JobsProvider } from "./jobsView";
 import { JobLogs } from "./logsView";
 import { planSubmit, submitWarning } from "./submit";
@@ -85,8 +86,22 @@ export function activate(context: vscode.ExtensionContext): void {
 
 	const jobs = new JobsProvider(api, output);
 	const logs = new JobLogs(api, output);
+	const details = new JobDetailsProvider(api);
 	context.subscriptions.push(
 		logs,
+		vscode.workspace.registerTextDocumentContentProvider(JOB_DETAILS_SCHEME, details),
+		vscode.commands.registerCommand("htcondor.showJobDetails", async (node?: JobNode) => {
+			if (node?.kind !== "job") {
+				return;
+			}
+			const uri = JobDetailsProvider.uriFor(jobId(node.job));
+			// Re-read first: the document is cached by VS Code, and a
+			// job reopened after it changed would otherwise show what it
+			// looked like the first time.
+			details.refresh(jobId(node.job));
+			const doc = await vscode.workspace.openTextDocument(uri);
+			await vscode.window.showTextDocument(doc, { preview: true });
+		}),
 		vscode.commands.registerCommand("htcondor.openTerminal", async (node?: JobNode) => {
 			if (node?.kind !== "job") {
 				return;

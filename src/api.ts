@@ -110,6 +110,26 @@ export class HTCondorApi {
 		};
 	}
 
+	/**
+	 * One job's whole ClassAd.
+	 *
+	 * No projection, unlike listJobs: the point is to show everything,
+	 * and the attribute somebody needs is reliably the one a projection
+	 * left out.
+	 */
+	async getJobAd(id: string): Promise<Record<string, unknown> | undefined> {
+		const [cluster, proc] = id.split(".");
+		const params = new URLSearchParams({
+			constraint: `ClusterId == ${Number(cluster)} && ProcId == ${Number(proc ?? 0)}`,
+			limit: "1",
+		});
+		const body = await this.request<{ jobs?: Array<Record<string, unknown>> }>(
+			"GET",
+			`/api/v1/jobs?${params.toString()}`
+		);
+		return body.jobs?.[0];
+	}
+
 	/** The caller's jobs, newest cluster first. */
 	async listJobs(options: ListJobsOptions = {}): Promise<JobSummary[]> {
 		const params = new URLSearchParams();

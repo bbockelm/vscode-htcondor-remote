@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 
 import { JobSummary } from "../api";
-import { groupByStatus, jobLabel, jobTooltip } from "../jobsModel";
+import { groupByStatus, jobContext, jobLabel, jobTooltip } from "../jobsModel";
 
 function job(cluster: number, status: number, extra: Partial<JobSummary> = {}): JobSummary {
 	return { cluster, proc: 0, status, ...extra };
@@ -66,4 +66,18 @@ test("the tooltip leaves out what is not known", () => {
 	const tooltip = jobTooltip(job(7, 1));
 	assert.match(tooltip, /7\.0 — Idle/);
 	assert.doesNotMatch(tooltip, /Owner:|Running on:|Hold reason:/);
+});
+
+// Offering "open a window in this job" on a completed job is not a
+// small untidiness: there is nothing to connect to, so the only thing
+// the menu entry can do is fail.
+test("each status gets its own context value", () => {
+	assert.equal(jobContext(job(1, 2)), "htcondor.job.running");
+	assert.equal(jobContext(job(1, 1)), "htcondor.job.idle");
+	assert.equal(jobContext(job(1, 5)), "htcondor.job.held");
+	assert.equal(jobContext(job(1, 4)), "htcondor.job.finished", "Completed");
+	assert.equal(jobContext(job(1, 3)), "htcondor.job.finished", "Removed");
+	// An unknown status must not land on `running`, or it inherits
+	// every action that needs a live job.
+	assert.notEqual(jobContext(job(1, 99)), "htcondor.job.running");
 });

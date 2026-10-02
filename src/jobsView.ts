@@ -8,7 +8,7 @@
 import * as vscode from "vscode";
 
 import { HTCondorApi, describeStatus } from "./api";
-import { JobNode, groupByStatus, jobLabel, jobTooltip } from "./jobsModel";
+import { JobNode, groupByStatus, jobContext, jobLabel, jobTooltip } from "./jobsModel";
 import { jobId } from "./api";
 
 export class JobsProvider implements vscode.TreeDataProvider<JobNode> {
@@ -42,7 +42,7 @@ export class JobsProvider implements vscode.TreeDataProvider<JobNode> {
 		const item = new vscode.TreeItem(jobLabel(node.job), vscode.TreeItemCollapsibleState.None);
 		item.description = describeStatus(node.job.status);
 		item.tooltip = jobTooltip(node.job);
-		item.contextValue = "htcondor.job";
+		item.contextValue = jobContext(node.job);
 		item.id = jobId(node.job);
 		return item;
 	}
