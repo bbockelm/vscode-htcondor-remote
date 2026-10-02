@@ -290,11 +290,22 @@ async function connect(
 				.getConfiguration("remote.SSH")
 				.update("configFile", written.configFile, vscode.ConfigurationTarget.Global);
 
-			output.info(`Connecting to ${alias} via ${gateway.host}:${gateway.port}`);
-			await vscode.commands.executeCommand(
-				"vscode.newWindow",
-				{ remoteAuthority: `ssh-remote+${alias}`, reuseWindow: false }
+			// Reusing this window is the default because it is what VS
+			// Code's own "Connect to Host..." does, and a convention the
+			// editor already set is worth more than a preference of
+			// ours. A new window is a setting away for anyone who wants
+			// to keep what they are looking at.
+			const inNewWindow =
+				vscode.workspace.getConfiguration("htcondor").get<string>("openIn", "currentWindow") === "newWindow";
+
+			output.info(
+				`Connecting to ${alias} via ${gateway.host}:${gateway.port} ` +
+					`(${inNewWindow ? "new window" : "this window"})`
 			);
+			await vscode.commands.executeCommand("vscode.newWindow", {
+				remoteAuthority: `ssh-remote+${alias}`,
+				reuseWindow: !inNewWindow,
+			});
 		}
 	);
 }

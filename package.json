@@ -42,6 +42,19 @@
           "type": "string",
           "default": "",
           "description": "The SSH gateway to reach jobs through, as you would type it for ssh: ap.example.edu, or ap.example.edu:2222. Only needed while the access point does not publish its own address."
+        },
+        "htcondor.openIn": {
+          "type": "string",
+          "enum": [
+            "currentWindow",
+            "newWindow"
+          ],
+          "enumDescriptions": [
+            "Reuse this window, as VS Code's own Connect to Host does. This window reloads into the job.",
+            "Open a separate window and leave this one as it is."
+          ],
+          "default": "currentWindow",
+          "description": "Whether connecting to a job reuses this window or opens a new one."
         }
       }
     },
