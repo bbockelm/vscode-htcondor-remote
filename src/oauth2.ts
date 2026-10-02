@@ -33,6 +33,27 @@ export interface Discovery {
 export interface ClientCredentials {
 	clientId: string;
 	clientSecret?: string;
+	/**
+	 * The scopes this registration was made with.
+	 *
+	 * Kept so a later version asking for different ones can tell that
+	 * the stored registration is stale. A client may not request a
+	 * scope it did not register, so reusing an old registration after
+	 * the list changes fails at the authorize step with a message about
+	 * a scope the user never chose.
+	 */
+	scopes?: string[];
+}
+
+/** Whether a stored registration still covers what this version asks for. */
+export function registrationIsCurrent(credentials: ClientCredentials): boolean {
+	const registered = new Set(credentials.scopes ?? []);
+	// An older registration recorded none. It predates this check, so
+	// it cannot be trusted to cover the current list.
+	if (registered.size === 0) {
+		return false;
+	}
+	return SCOPES.every((scope) => registered.has(scope));
 }
 
 export interface Tokens {
@@ -51,8 +72,19 @@ export interface Tokens {
  * an SSH certificate is refused without it. `offline_access` because an
  * editor session lives for days and re-prompting daily is the thing
  * this design exists to avoid.
+ *
+ * `openid` is requested because the access point GRANTS it whether or
+ * not it was asked for. A grant may not exceed what the client is
+ * registered for, so a client that leaves it out gets a grant carrying
+ * a scope it never registered -- which works until the first refresh
+ * and then fails for ever with:
+ *
+ *     The OAuth 2.0 Client is not allowed to request scope 'openid'
+ *
+ * Asking for it costs nothing: it names no privilege, and the server
+ * was adding it regardless.
  */
-export const SCOPES = ["condor:/WRITE", "offline_access"];
+export const SCOPES = ["openid", "condor:/WRITE", "offline_access"];
 
 /**
  * A refusal from the token endpoint, with the reason kept.
@@ -145,6 +177,7 @@ export async function register(
 	return {
 		clientId: body.client_id,
 		...(body.client_secret ? { clientSecret: body.client_secret } : {}),
+		scopes: [...SCOPES],
 	};
 }
 
@@ -401,10 +434,9 @@ function describeTokenFailure(status: number, body: string): string {
 		// asks for -- scopes narrowed on the server, or a consent that
 		// did not include offline_access, without which no refresh is
 		// permitted at all.
-		return (
-			"This sign-in no longer covers what the extension needs" +
-			(description ? `: ${description}` : "") +
-			". Signing out and in again usually fixes it."
+		return join(
+			"This sign-in no longer covers what the extension needs" + (description ? `: ${description}` : ""),
+			"Signing out and in again usually fixes it."
 		);
 	}
 
@@ -485,4 +517,17 @@ function escapeHTML(text: string): string {
 		.replace(/</g, "&lt;")
 		.replace(/>/g, "&gt;")
 		.replace(/"/g, "&quot;");
+}
+
+/**
+ * Join sentences without doubling the full stop.
+ *
+ * The server's error_description is a sentence and ends with one of its
+ * own, so appending ours produced "...malformed.. Signing out" -- which
+ * reads like a typo in the middle of an explanation the reader is
+ * already struggling with.
+ */
+function join(first: string, second: string): string {
+	const left = first.replace(/\s+$/, "");
+	return /[.!?]$/.test(left) ? `${left} ${second}` : `${left}. ${second}`;
 }

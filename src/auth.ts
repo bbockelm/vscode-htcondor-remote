@@ -25,6 +25,7 @@ import {
 	pkce,
 	refreshTokens,
 	register,
+	registrationIsCurrent,
 	SCOPES,
 } from "./oauth2";
 import { StoredTokens, TokenStore } from "./tokens";
@@ -179,7 +180,15 @@ export class HTCondorAuthProvider implements vscode.AuthenticationProvider, vsco
 	private async client(discovery: Discovery): Promise<ClientCredentials> {
 		const raw = await this.secrets.get(CLIENT_SECRET_KEY);
 		if (raw) {
-			return JSON.parse(raw) as ClientCredentials;
+			const stored = JSON.parse(raw) as ClientCredentials;
+			// A registration that does not cover what this version asks
+			// for is re-made rather than reused. A client may not
+			// request a scope it did not register, so keeping it would
+			// fail at the authorize step with a message naming a scope
+			// the user never chose.
+			if (registrationIsCurrent(stored)) {
+				return stored;
+			}
 		}
 		const credentials = await register(discovery);
 		await this.secrets.store(CLIENT_SECRET_KEY, JSON.stringify(credentials));

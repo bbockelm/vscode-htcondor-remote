@@ -12,6 +12,7 @@ import {
 	pkce,
 	refreshTokens,
 	register,
+	registrationIsCurrent,
 	SCOPES,
 } from "../oauth2";
 
@@ -298,4 +299,56 @@ test("success and failure look different", () => {
 	// see it.
 	assert.match(ok, /Signed in/);
 	assert.match(bad, /Sign-in failed/);
+});
+
+// The server's error_description is a sentence and ends with a full
+// stop of its own. Appending ours produced "...malformed.. Signing out",
+// which reads like a typo in the middle of an explanation the reader is
+// already struggling with.
+test("the server's sentence and ours do not collide", async () => {
+	await assert.rejects(
+		refreshTokens(
+			DISCOVERY,
+			{ clientId: "c" },
+			"rt",
+			jsonFetch(400, {
+				error: "invalid_scope",
+				error_description: "The OAuth 2.0 Client is not allowed to request scope 'openid'.",
+			})
+		),
+		(err: Error) => {
+			assert.doesNotMatch(err.message, /\.\./, `doubled full stop: ${err.message}`);
+			assert.match(err.message, /scope 'openid'/);
+			assert.match(err.message, /Signing out and in again/);
+			return true;
+		}
+	);
+});
+
+test("a description without punctuation still gets a full stop", async () => {
+	await assert.rejects(
+		refreshTokens(DISCOVERY, { clientId: "c" }, "rt", jsonFetch(400, { error: "invalid_scope", error_description: "no trailing stop" })),
+		/no trailing stop\. Signing out/
+	);
+});
+
+// openid is requested because the access point grants it whether or not
+// it was asked for, and a grant may not exceed what the client
+// registered. Leaving it out produced a grant that worked once and then
+// failed for ever.
+test("openid is among the scopes requested", () => {
+	assert.ok(SCOPES.includes("openid"), "the server grants openid regardless; not registering it breaks refresh");
+	assert.ok(SCOPES.includes("condor:/WRITE"));
+	assert.ok(SCOPES.includes("offline_access"));
+});
+
+// A registration is made for a fixed set of scopes. Reusing a stale one
+// fails at the authorize step, naming a scope the user never chose.
+test("a registration missing a current scope is not reused", () => {
+	assert.equal(registrationIsCurrent({ clientId: "c", scopes: [...SCOPES] }), true);
+	assert.equal(registrationIsCurrent({ clientId: "c", scopes: ["condor:/WRITE", "offline_access"] }), false);
+	// Registered before this was recorded at all: cannot be trusted to
+	// cover the current list.
+	assert.equal(registrationIsCurrent({ clientId: "c" }), false);
+	assert.equal(registrationIsCurrent({ clientId: "c", scopes: [] }), false);
 });
