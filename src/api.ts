@@ -216,11 +216,15 @@ export class HTCondorApi {
 
 	/** The caller's interactive sessions. */
 	async listSessions(): Promise<SessionSummary[]> {
-		const body = await this.request<{ sessions?: Array<Record<string, unknown>> }>(
+		// `terminals`, which is what the server calls them. Guessing
+		// `sessions` here cost an evening: the list came back empty
+		// every time, so a caller waiting for a session to start waited
+		// for one that, as far as it could tell, did not exist.
+		const body = await this.request<{ terminals?: Array<Record<string, unknown>> }>(
 			"GET",
 			"/api/v1/interactive/terminal"
 		);
-		return (body.sessions ?? []).map((raw) => ({
+		return (body.terminals ?? []).map((raw) => ({
 			instanceId: String(raw.instance_id ?? ""),
 			jobId: String(raw.job_id ?? ""),
 			status: typeof raw.job_status === "number" ? raw.job_status : 0,

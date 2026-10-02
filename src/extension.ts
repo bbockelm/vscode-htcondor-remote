@@ -114,6 +114,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand("htcondor.newSession", () =>
 			newSession(api, certificates, jobs, output)
 		),
+		vscode.commands.registerCommand("htcondor.showExtensionLog", () => output.show(true)),
 		vscode.commands.registerCommand("htcondor.setup", () => setup(jobs, setContext)),
 		vscode.commands.registerCommand("htcondor.submit", () => submitActiveEditor(api, jobs, output)),
 		vscode.commands.registerCommand("htcondor.connect", () => connect(api, certificates, output)),
@@ -470,23 +471,35 @@ async function newSession(
 		spec = parseSize(typed) ?? {};
 	}
 
-	const created = await vscode.window.withProgress(
-		{ location: vscode.ProgressLocation.Notification, title: "Starting a session", cancellable: true },
-		async (progress, cancel) => {
-			progress.report({ message: describeSpec(spec) });
-			const session = await api.createSession(spec);
-			output.info(`Created session ${session.jobId} (${describeSpec(spec)})`);
-			jobs.refresh();
+	// Everything inside is wrapped, because a rejected command promise
+	// is reported nowhere a user will look: the progress notification
+	// simply disappears and the extension appears to have done
+	// nothing. That is exactly how a wrong response key hid for a
+	// whole evening.
+	let created;
+	try {
+		created = await vscode.window.withProgress(
+			{ location: vscode.ProgressLocation.Notification, title: "Starting a session", cancellable: true },
+			async (progress, cancel) => {
+				progress.report({ message: describeSpec(spec) });
+				const session = await api.createSession(spec);
+				output.info(`Created session ${session.jobId} (${describeSpec(spec)})`);
+				jobs.refresh();
 
-			// Waiting here rather than returning immediately, because
-			// the queue wait is the whole cost of a session and a user
-			// who is told "created" has no idea whether to act.
-			progress.report({ message: `${session.jobId} is queued` });
-			const ready = await waitForSession(api, session.jobId, progress, cancel);
-			jobs.refresh();
-			return ready ? session : undefined;
-		}
-	);
+				// Waiting here rather than returning immediately,
+				// because the queue wait is the whole cost of a session
+				// and a user who is told "created" has no idea whether
+				// to act.
+				progress.report({ message: `${session.jobId} is queued` });
+				const ready = await waitForSession(api, session.jobId, progress, cancel, output);
+				jobs.refresh();
+				return ready ? session : undefined;
+			}
+		);
+	} catch (err: unknown) {
+		await report(output, "Could not start a session", err);
+		return;
+	}
 	if (!created) {
 		return;
 	}
@@ -517,29 +530,91 @@ async function waitForSession(
 	api: HTCondorApi,
 	jobId: string,
 	progress: vscode.Progress<{ message?: string }>,
-	cancel: vscode.CancellationToken
+	cancel: vscode.CancellationToken,
+	output: vscode.LogOutputChannel
 ): Promise<boolean> {
+	// Bounded. An unbounded poll is indistinguishable from a hang, and
+	// when the thing being polled for can never appear -- a job that
+	// vanished, a response this client misreads -- it IS one.
+	const deadlineMs = 20 * 60 * 1000;
+	const started = Date.now();
+	let everSeen = false;
+
 	for (let attempt = 0; !cancel.isCancellationRequested; attempt++) {
-		const sessions = await api.listSessions();
+		const elapsed = Math.round((Date.now() - started) / 1000);
+		if (Date.now() - started > deadlineMs) {
+			await report(
+				output,
+				`Session ${jobId} has not started after ${Math.round(deadlineMs / 60000)} minutes`,
+				everSeen
+					? new Error("It is still queued. It will keep waiting; connect from the Jobs view when it starts.")
+					: new Error(`It never appeared in this access point's session list, which may mean the request succeeded but something else is wrong.`)
+			);
+			return false;
+		}
+
+		let sessions;
+		try {
+			sessions = await api.listSessions();
+		} catch (err: unknown) {
+			// Logged and retried: a blip while waiting is not a reason
+			// to abandon a session that is probably still coming.
+			output.warn(`Could not list sessions while waiting for ${jobId}: ${describe(err)}`);
+			await pause(3_000);
+			continue;
+		}
+
 		const session = sessions.find((s) => s.jobId === jobId);
 		if (session) {
+			everSeen = true;
 			if (isReady(session.status)) {
 				return true;
 			}
 			if (isStuck(session.status)) {
-				void vscode.window.showErrorMessage(
-					session.holdReason
-						? `Session ${jobId} is held: ${session.holdReason}`
-						: `Session ${jobId} stopped before it started.`
+				await report(
+					output,
+					`Session ${jobId} stopped before it started`,
+					new Error(session.holdReason || "It was held, removed or finished.")
 				);
 				return false;
 			}
-			progress.report({ message: `${jobId} is waiting for a slot (${attempt * 3}s)` });
+			progress.report({ message: `${jobId} is waiting for a slot (${elapsed}s)` });
+		} else {
+			// Said out loud rather than shown as a bare title. A
+			// notification that never changes reads as a hang.
+			progress.report({ message: `waiting for ${jobId} to appear (${elapsed}s)` });
+			if (attempt === 5) {
+				output.warn(
+					`${jobId} has not appeared in the session list after ${elapsed}s. ` +
+						`The session was created, so this is most likely a problem reading the list.`
+				);
+			}
 		}
-		await new Promise((resolve) => setTimeout(resolve, 3_000));
+		await pause(3_000);
 	}
 	// Cancelled. The session is left alone on purpose -- it is still
 	// queued, and the user can connect to it from the tree when it
 	// starts.
 	return false;
+}
+
+function pause(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Tell the user something failed, and give them the log.
+ *
+ * Every failure path goes through here. An error shown without a way
+ * to see the detail leaves the user with "it did not work" and nothing
+ * to do about it -- and the log channel is not somewhere anybody finds
+ * by accident.
+ */
+async function report(output: vscode.LogOutputChannel, what: string, err: unknown): Promise<void> {
+	const detail = describe(err);
+	output.error(`${what}: ${detail}`);
+	const answer = await vscode.window.showErrorMessage(`${what}: ${detail}`, "Show log");
+	if (answer === "Show log") {
+		output.show(true);
+	}
 }

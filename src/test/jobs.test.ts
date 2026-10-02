@@ -163,3 +163,27 @@ test("a poll with no new output keeps its place", async () => {
 	assert.deepEqual(result.offsets, { stdout: 100, stderr: 5 });
 	assert.equal(result.stdout, "");
 });
+
+// The server calls them `terminals`. Reading the wrong key does not
+// fail -- it returns an empty list, so a caller waiting for a session
+// to start waits for one that appears never to exist.
+test("sessions are read from the key the server actually uses", async () => {
+	const seen: Seen = {};
+	const api = recordingApi(
+		seen,
+		200,
+		JSON.stringify({
+			terminals: [{ instance_id: "abc", job_id: "12.0", job_status: 2, batch_name: "session" }],
+		})
+	);
+	const sessions = await api.listSessions();
+	assert.equal(sessions.length, 1, "nothing was read; the response key is wrong");
+	assert.equal(sessions[0]!.jobId, "12.0");
+	assert.equal(sessions[0]!.status, 2);
+});
+
+test("a session list with the wrong key reads as empty, not as a crash", async () => {
+	const seen: Seen = {};
+	const api = recordingApi(seen, 200, JSON.stringify({ somethingElse: [] }));
+	assert.deepEqual(await api.listSessions(), []);
+});

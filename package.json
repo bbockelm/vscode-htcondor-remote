@@ -97,6 +97,11 @@
         "command": "htcondor.newSession",
         "title": "New Interactive Session",
         "icon": "$(add)"
+      },
+      {
+        "command": "htcondor.showExtensionLog",
+        "title": "HTCondor: Show Extension Log",
+        "icon": "$(output)"
       }
     ],
     "authentication": [
@@ -124,6 +129,11 @@
           "command": "htcondor.refreshJobs",
           "when": "view == htcondor.jobs",
           "group": "navigation"
+        },
+        {
+          "command": "htcondor.showExtensionLog",
+          "when": "view == htcondor.jobs",
+          "group": "navigation@9"
         }
       ],
       "view/item/context": [
