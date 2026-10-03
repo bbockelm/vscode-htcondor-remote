@@ -45,6 +45,27 @@ export interface ClientCredentials {
 	scopes?: string[];
 }
 
+/**
+ * Whether a session's scopes cover what a caller asked for.
+ *
+ * VS Code asks the provider for matching sessions before deciding
+ * whether to prompt: a session handed back is one it considers usable,
+ * so it returns that rather than offering to sign in. A session granted
+ * under an older scope list must therefore NOT match, or changing the
+ * list leaves "Sign in" doing nothing while every request fails against
+ * a grant that cannot serve them.
+ *
+ * An empty request matches anything, which is the rule VS Code itself
+ * uses -- and the reason passing [] at every call site hid this.
+ */
+export function sessionCoversScopes(sessionScopes: readonly string[], requested: readonly string[]): boolean {
+	if (requested.length === 0) {
+		return true;
+	}
+	const held = new Set(sessionScopes);
+	return requested.every((scope) => held.has(scope));
+}
+
 /** Whether a stored registration still covers what this version asks for. */
 export function registrationIsCurrent(credentials: ClientCredentials): boolean {
 	const registered = new Set(credentials.scopes ?? []);

@@ -14,6 +14,7 @@ import {
 	register,
 	registrationIsCurrent,
 	SCOPES,
+	sessionCoversScopes,
 } from "../oauth2";
 
 const TIMEOUT = { timeout: 5_000 };
@@ -351,4 +352,24 @@ test("a registration missing a current scope is not reused", () => {
 	// cover the current list.
 	assert.equal(registrationIsCurrent({ clientId: "c" }), false);
 	assert.equal(registrationIsCurrent({ clientId: "c", scopes: [] }), false);
+});
+
+// VS Code asks for matching sessions before deciding whether to
+// prompt. A session handed back is one it considers usable, so it
+// returns that instead of offering to sign in.
+//
+// The bug: a session granted under an older scope list still matched,
+// so after the list changed "Sign in" did nothing visible and every
+// request failed against a grant that could not serve them.
+test("a session missing a requested scope does not match", () => {
+	assert.equal(sessionCoversScopes(["condor:/WRITE", "offline_access"], SCOPES), false);
+	assert.equal(sessionCoversScopes([...SCOPES], SCOPES), true);
+	assert.equal(sessionCoversScopes([...SCOPES, "extra"], SCOPES), true, "extra scopes are not a mismatch");
+});
+
+// An empty request matches anything, which is VS Code's own rule and
+// the reason passing [] at every call site hid this.
+test("an empty request matches any session", () => {
+	assert.equal(sessionCoversScopes(["condor:/WRITE"], []), true);
+	assert.equal(sessionCoversScopes([], []), true);
 });

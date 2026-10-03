@@ -27,6 +27,7 @@ import {
 	register,
 	registrationIsCurrent,
 	SCOPES,
+	sessionCoversScopes,
 } from "./oauth2";
 import { StoredTokens, TokenStore } from "./tokens";
 
@@ -51,12 +52,24 @@ export class HTCondorAuthProvider implements vscode.AuthenticationProvider, vsco
 		this.changed.dispose();
 	}
 
-	async getSessions(_scopes?: readonly string[]): Promise<vscode.AuthenticationSession[]> {
+	/**
+	 * Sessions matching the requested scopes.
+	 *
+	 * The scopes argument is honoured, and that is not a formality.
+	 * VS Code asks this before prompting: a session returned here is
+	 * one it considers usable, so it hands it back and never offers to
+	 * sign in. Ignoring the argument meant a session granted under an
+	 * older scope list still matched, so after the list changed the
+	 * "Sign in" button did nothing visible and every request failed
+	 * against a grant that could not serve them.
+	 */
+	async getSessions(scopes?: readonly string[]): Promise<vscode.AuthenticationSession[]> {
 		const stored = await this.tokens.read();
 		if (!stored) {
 			return [];
 		}
-		return [this.toSession(stored)];
+		const session = this.toSession(stored);
+		return sessionCoversScopes(session.scopes, scopes ?? []) ? [session] : [];
 	}
 
 	async createSession(_scopes: readonly string[]): Promise<vscode.AuthenticationSession> {

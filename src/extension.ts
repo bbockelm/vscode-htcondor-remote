@@ -13,6 +13,7 @@ import { discover } from "./oauth2";
 import { PRESETS, describeSpec, isReady, isStuck, parseSize } from "./sessions";
 import { SessionSpec } from "./api";
 import { AUTH_PROVIDER_ID, HTCondorAuthProvider } from "./auth";
+import { SCOPES } from "./oauth2";
 import { CertificateManager, CHECK_INTERVAL_MS, KeyStore } from "./certificate";
 import { JobNode } from "./jobsModel";
 import { JOB_DETAILS_SCHEME, JobDetailsProvider } from "./jobDetails";
@@ -166,7 +167,9 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (node?.kind !== "job") {
 				return;
 			}
-			await vscode.authentication.getSession(AUTH_PROVIDER_ID, [], { createIfNone: true });
+			if (!(await ensureSession())) {
+				return;
+			}
 			const id = jobId(node.job);
 			vscode.window
 				.createTerminal({
@@ -197,8 +200,12 @@ export function activate(context: vscode.ExtensionContext): void {
 		}),
 		vscode.commands.registerCommand("htcondor.refreshJobs", () => jobs.refresh()),
 		vscode.commands.registerCommand("htcondor.signIn", async () => {
-			await vscode.authentication.getSession(AUTH_PROVIDER_ID, [], { createIfNone: true });
-			vscode.window.showInformationMessage("Signed in to HTCondor.");
+			// force: an explicit click is a new decision, and VS Code
+			// would otherwise honour a remembered Cancel by doing
+			// nothing.
+			if (await ensureSession(true)) {
+				void vscode.window.showInformationMessage("Signed in to HTCondor.");
+			}
 		}),
 		vscode.commands.registerCommand("htcondor.newSession", () =>
 			newSession(api, certificates, jobs, output)
@@ -270,7 +277,9 @@ async function connect(
 	output: vscode.LogOutputChannel,
 	chosen?: string
 ): Promise<void> {
-	await vscode.authentication.getSession(AUTH_PROVIDER_ID, [], { createIfNone: true });
+	if (!(await ensureSession())) {
+		return;
+	}
 
 	const target =
 		chosen ??
@@ -448,7 +457,9 @@ async function submitActiveEditor(
 		void vscode.window.showErrorMessage("Open a submit file first.");
 		return;
 	}
-	await vscode.authentication.getSession(AUTH_PROVIDER_ID, [], { createIfNone: true });
+	if (!(await ensureSession())) {
+		return;
+	}
 
 	const text = editor.document.getText();
 	const warning = submitWarning(planSubmit(text));
@@ -532,7 +543,9 @@ async function setup(jobs: JobsProvider, refreshContext: () => Promise<void>): P
 	// Straight into the sign-in: wanting the address saved and not
 	// wanting to sign in is not a real case, and leaving them to find
 	// the command themselves is the problem this is fixing.
-	await vscode.authentication.getSession(AUTH_PROVIDER_ID, [], { createIfNone: true });
+	if (!(await ensureSession())) {
+		return;
+	}
 	await refreshContext();
 	jobs.refresh();
 }
@@ -551,7 +564,9 @@ async function newSession(
 	jobs: JobsProvider,
 	output: vscode.LogOutputChannel
 ): Promise<void> {
-	await vscode.authentication.getSession(AUTH_PROVIDER_ID, [], { createIfNone: true });
+	if (!(await ensureSession())) {
+		return;
+	}
 
 	const picked = await vscode.window.showQuickPick(
 		[
@@ -726,5 +741,44 @@ async function report(output: vscode.LogOutputChannel, what: string, err: unknow
 	const answer = await vscode.window.showErrorMessage(`${what}: ${detail}`, "Show log");
 	if (answer === "Show log") {
 		output.show(true);
+	}
+}
+
+/**
+ * Get a session, asking for one if there is none.
+ *
+ * Returns false when the user declined, which is a normal answer and
+ * not an error: every caller simply stops.
+ *
+ * The scopes are passed rather than left empty, because VS Code
+ * matches a stored session against them before deciding whether to
+ * prompt. An empty list matches anything, including a session granted
+ * under a scope list this version no longer uses -- which is how
+ * "Sign in" came to do nothing at all.
+ */
+async function ensureSession(force = false): Promise<boolean> {
+	try {
+		// forceNewSession for an explicit click, createIfNone otherwise.
+		//
+		// VS Code remembers that a prompt was dismissed and will then
+		// quietly answer "no session" to createIfNone rather than
+		// asking again -- so after one Cancel, the Sign in button did
+		// nothing at all, which looks like a broken button rather than
+		// a remembered decision. An explicit click is a new decision
+		// and says so.
+		const session = await vscode.authentication.getSession(
+			AUTH_PROVIDER_ID,
+			SCOPES,
+			force ? { forceNewSession: true } : { createIfNone: true }
+		);
+		return session !== undefined;
+	} catch (err: unknown) {
+		// Cancelling is not a failure worth a dialog -- the user just
+		// said no -- but anything else is worth seeing.
+		const message = err instanceof Error ? err.message : String(err);
+		if (!/cancel/i.test(message)) {
+			void vscode.window.showErrorMessage(`Could not sign in: ${message}`);
+		}
+		return false;
 	}
 }
