@@ -211,3 +211,41 @@ test("a session's hold code is read, not just its reason", async () => {
 	assert.equal(session!.holdReasonCode, 16);
 	assert.equal(session!.holdReason, "Spooling input data files");
 });
+
+// A request that never answers is worse than one that fails: the
+// caller never finishes either. For the jobs tree that meant a view
+// stuck on "Loading jobs" which could not even fall back to its
+// welcome, because VS Code only shows that once it knows the tree is
+// empty.
+// Given a deadline of its own, so that removing the abort signal makes
+// this fail in five seconds rather than wedging the whole suite -- a
+// hung run reads as infrastructure trouble rather than as the missing
+// timeout it is.
+test("a request that never answers times out", { timeout: 5_000 }, async () => {
+	const hang: typeof fetch = ((_input: unknown, init?: RequestInit) =>
+		new Promise((_resolve, reject) => {
+			// Reject the way an aborted fetch does.
+			init?.signal?.addEventListener("abort", () => {
+				const err = new Error("aborted");
+				err.name = "TimeoutError";
+				reject(err);
+			});
+		})) as typeof fetch;
+
+	// 100ms, so the test waits for the deadline rather than the
+	// other way round.
+	const api = new HTCondorApi("https://ap.example.edu", async () => "t", hang, 100);
+	await assert.rejects(api.listJobs(), /did not answer within/);
+});
+
+// Every request carries the deadline, not just the first one written.
+test("the timeout is attached to the request", async () => {
+	let sawSignal = false;
+	const fetchImpl: typeof fetch = (async (_input: unknown, init?: RequestInit) => {
+		sawSignal = init?.signal instanceof AbortSignal;
+		return new Response(JSON.stringify({ jobs: [] }), { status: 200 });
+	}) as typeof fetch;
+
+	await new HTCondorApi("https://ap.example.edu", async () => "t", fetchImpl).listJobs();
+	assert.ok(sawSignal, "no abort signal was attached, so this request could hang for ever");
+});

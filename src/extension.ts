@@ -143,7 +143,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		})
 	);
 
-	const jobs = new JobsProvider(api, output);
+	const jobs = new JobsProvider(api, output, async () => (await auth.getSessions()).length > 0);
 	const jobsView = vscode.window.createTreeView("htcondor.jobs", { treeDataProvider: jobs });
 	const logs = new JobLogs(api, output);
 	const details = new JobDetailsProvider(api);

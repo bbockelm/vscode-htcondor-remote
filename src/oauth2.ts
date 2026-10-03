@@ -87,6 +87,15 @@ export interface Tokens {
 export const SCOPES = ["openid", "condor:/WRITE", "offline_access"];
 
 /**
+ * How long an OAuth2 request may take.
+ *
+ * Shorter than a data request: these run while a person is waiting and
+ * looking at a spinner, and an unbounded one leaves a sign-in hung with
+ * nothing to cancel.
+ */
+const OAUTH2_TIMEOUT_MS = 20_000;
+
+/**
  * A refusal from the token endpoint, with the reason kept.
  *
  * `fatal` means this grant will never work again, however many times it
@@ -108,7 +117,13 @@ export class TokenError extends Error {
 
 export async function discover(baseUrl: string, fetchImpl: typeof fetch = fetch): Promise<Discovery> {
 	const url = new URL("/.well-known/oauth-authorization-server", baseUrl);
-	const response = await fetchImpl(url, { headers: { Accept: "application/json" } });
+	const response = await fetchImpl(url, {
+		headers: { Accept: "application/json" },
+		// Bounded, like every other request here: a discovery that
+		// never answers leaves a sign-in spinning with nothing to show
+		// for it.
+		signal: AbortSignal.timeout(OAUTH2_TIMEOUT_MS),
+	});
 	if (!response.ok) {
 		throw new Error(
 			`The access point did not publish OAuth2 metadata (${response.status}). ` +
@@ -157,6 +172,7 @@ export async function register(
 	}
 	const response = await fetchImpl(discovery.registrationEndpoint, {
 		method: "POST",
+		signal: AbortSignal.timeout(OAUTH2_TIMEOUT_MS),
 		headers: { "Content-Type": "application/json", Accept: "application/json" },
 		body: JSON.stringify({
 			client_name: "VS Code (HTCondor)",
@@ -369,6 +385,7 @@ async function tokenRequest(
 
 	const response = await fetchImpl(discovery.tokenEndpoint, {
 		method: "POST",
+		signal: AbortSignal.timeout(OAUTH2_TIMEOUT_MS),
 		headers,
 		body: form.toString(),
 	});

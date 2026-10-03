@@ -52,11 +52,31 @@ export class ApiError extends Error {
 	}
 }
 
+/**
+ * How long any one request may take.
+ *
+ * Every request needs one. Without it a stalled connection never
+ * settles, and a caller awaiting it never finishes either -- which, for
+ * the tree, meant a view stuck on "Loading jobs" that could not even
+ * fall back to its welcome, because VS Code only shows that once it
+ * knows the tree is empty.
+ *
+ * Thirty seconds, which is generous for a queue listing and short
+ * enough that a wedged access point is reported rather than waited on.
+ */
+const REQUEST_TIMEOUT_MS = 30_000;
+
 export class HTCondorApi {
 	constructor(
 		private readonly baseUrl: string,
 		private readonly token: TokenSource,
-		private readonly fetchImpl: typeof fetch = fetch
+		private readonly fetchImpl: typeof fetch = fetch,
+		// Settable so a test can use a deadline it can actually wait
+		// for. A test asserting the production thirty seconds would
+		// have to take thirty seconds, so it would be written to time
+		// out first instead -- and then it fails whether or not the
+		// timeout works.
+		private readonly timeoutMs: number = REQUEST_TIMEOUT_MS
 	) {}
 
 	async certificateAuthority(): Promise<SSHCertificateAuthority> {
@@ -279,11 +299,26 @@ export class HTCondorApi {
 			headers["Content-Type"] = "application/json";
 		}
 
-		const response = await this.fetchImpl(new URL(path, this.baseUrl), {
-			method,
-			headers,
-			...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
-		});
+		let response: Response;
+		try {
+			response = await this.fetchImpl(new URL(path, this.baseUrl), {
+				method,
+				headers,
+				signal: AbortSignal.timeout(this.timeoutMs),
+				...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
+			});
+		} catch (err: unknown) {
+			// A timeout arrives as an abort, which says nothing about
+			// what was being waited for.
+			if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
+				throw new ApiError(
+					0,
+					"",
+					`The access point did not answer within ${this.timeoutMs / 1000}s (${method} ${path})`
+				);
+			}
+			throw err;
+		}
 
 		const text = await response.text();
 		if (!response.ok) {

@@ -10,7 +10,16 @@ export type JobsState =
 	| { kind: "never-loaded" }
 	| { kind: "loading" }
 	| { kind: "loaded"; count: number }
-	| { kind: "failed"; detail: string };
+	| { kind: "failed"; detail: string }
+	/**
+	 * Nobody is signed in, so there is nothing to list.
+	 *
+	 * Distinct from a failure: it is the ordinary state before signing
+	 * in and after signing out, and the welcome view already says what
+	 * to do about it. A message bar reading "Could not load jobs: Not
+	 * signed in" on top of a "Sign in" button is noise.
+	 */
+	| { kind: "signed-out" };
 
 /**
  * The message for a state, or undefined when the tree speaks for
@@ -31,6 +40,8 @@ export function jobsMessage(state: JobsState): string | undefined {
 			// Named, and pointing at where the detail is. "Could not
 			// load" with no reason leaves the user with nothing to do.
 			return `Could not load jobs: ${state.detail}`;
+		case "signed-out":
+			return undefined;
 		case "loaded":
 			// Nothing: an empty tree after a successful listing really
 			// does mean an empty queue, and VS Code's own welcome view

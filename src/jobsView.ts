@@ -24,7 +24,8 @@ export class JobsProvider implements vscode.TreeDataProvider<JobNode> {
 
 	constructor(
 		private readonly api: HTCondorApi,
-		private readonly log: vscode.LogOutputChannel
+		private readonly log: vscode.LogOutputChannel,
+		private readonly signedIn: () => Promise<boolean>
 	) {}
 
 	refresh(): void {
@@ -61,6 +62,17 @@ export class JobsProvider implements vscode.TreeDataProvider<JobNode> {
 		if (node?.kind === "group") {
 			return node.jobs.map((job) => ({ kind: "job", job }));
 		}
+		// Asked before listing, and answered without the network.
+		//
+		// Signed out, a listing is pointless and -- worse -- the tree
+		// stays pending while it is attempted, so VS Code never learns
+		// the tree is empty and never shows the welcome that says to
+		// sign in. The view then looks stuck rather than signed out.
+		if (!(await this.signedIn())) {
+			this.setState({ kind: "signed-out" });
+			return [];
+		}
+
 		this.setState({ kind: "loading" });
 		try {
 			const jobs = await this.api.listJobs();

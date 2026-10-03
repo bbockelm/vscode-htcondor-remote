@@ -103,3 +103,11 @@ test("a failure names its reason", () => {
 	const message = jobsMessage({ kind: "failed", detail: "the access point refused the request (403)" })!;
 	assert.match(message, /403/);
 });
+
+// Signed out is not a failure. It is the ordinary state before signing
+// in and after signing out, and the welcome view already says what to
+// do; a message bar reading "Could not load jobs: Not signed in" on
+// top of a "Sign in" button is noise.
+test("signed out says nothing and lets the welcome speak", () => {
+	assert.equal(jobsMessage({ kind: "signed-out" }), undefined);
+});
