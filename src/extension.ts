@@ -25,7 +25,7 @@ import { planSubmit, submitWarning } from "./submit";
 import { JobTerminal } from "./terminal";
 import { describeWarm, WARM_TIMEOUT_MS, warmTarget } from "./warmup";
 import { configureHttp, http, userAgent } from "./http";
-import { compare, describeTimings, directGet, fetchGet } from "./probe";
+import { compare, describeTimings, directGet, fetchGet, unpatchedFetch } from "./probe";
 import { explainBlocking, LoopLag } from "./eventLoop";
 import { accessPointLabel, canonicalAccessPoint, insecureAccessPoint } from "./accessPoints";
 import { ACCESS_POINTS_SETTING, CurrentAccessPoint } from "./currentAccessPoint";
@@ -144,6 +144,27 @@ export function activate(context: vscode.ExtensionContext): void {
 				headers
 			);
 			output.warn(describeTimings("The same request, over our own socket", probe));
+
+			// The cleanest control available: the editor patches the
+			// global `fetch` in the extension host and keeps the
+			// original on `globalThis.__vscodeOriginalFetch`. Timing
+			// both is the same process, the same client, the same
+			// connection stack -- only the patch differs.
+			const original = unpatchedFetch();
+			if (original) {
+				const before = await fetchGet(new URL(path, accessPoint).toString(), original, 20_000, headers);
+				output.warn(describeTimings("The same request, through the editor's unpatched fetch", before));
+				if (before.error === undefined && before.totalMs < 5_000) {
+					output.warn(
+						`The unpatched \`fetch\` answered in ${before.totalMs}ms. The editor installs its ` +
+							`own \`fetch\` in every extension host and that patch is what the time is going ` +
+							`into -- it is installed whatever \`http.proxySupport\` says, which is why turning ` +
+							`that off changed nothing.`
+					);
+				}
+			} else {
+				output.warn("The editor does not expose an unpatched fetch here, so that comparison is unavailable.");
+			}
 
 			if (probe.error !== undefined) {
 				output.warn(`The probe could not complete (${probe.error}), so this says nothing either way.`);

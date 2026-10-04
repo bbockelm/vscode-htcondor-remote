@@ -98,15 +98,35 @@ export async function directGet(
 	});
 }
 
+/**
+ * The `fetch` the editor replaced, if it kept a reference.
+ *
+ * VS Code patches the global `fetch` in the extension host and stashes
+ * the original on `globalThis.__vscodeOriginalFetch`. The two differ
+ * only by that patch -- same process, same undici, same connection
+ * stack -- so timing both is the cleanest control there is for
+ * deciding whether the patch is what costs the time.
+ */
+export function unpatchedFetch(
+	global: Record<string, unknown> = globalThis as unknown as Record<string, unknown>
+): typeof fetch | undefined {
+	const original = global.__vscodeOriginalFetch;
+	if (typeof original !== "function" || original === global.fetch) {
+		return undefined;
+	}
+	return original as typeof fetch;
+}
+
 /** Time the same URL through the fetch the extension host gave us. */
 export async function fetchGet(
 	target: string,
 	impl: typeof fetch,
-	timeoutMs: number
+	timeoutMs: number,
+	extra: Readonly<Record<string, string>> = {}
 ): Promise<Timings> {
 	const started = Date.now();
 	try {
-		const response = await impl(target, { signal: AbortSignal.timeout(timeoutMs) });
+		const response = await impl(target, { signal: AbortSignal.timeout(timeoutMs), headers: { ...extra } });
 		// Read the body: with an HTTP/1.1 connection the status line can
 		// arrive well before the stack is finished, and the number being
 		// compared has to mean the same thing in both probes.

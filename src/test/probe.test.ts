@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { URL } from "node:url";
 
-import { compare, describeTimings, directGet, fetchGet, parseStatusLine, requestBytes } from "../probe";
+import { compare, describeTimings, directGet, fetchGet, parseStatusLine, requestBytes, unpatchedFetch } from "../probe";
 
 test("the status line is read out of the first bytes", () => {
 	assert.equal(parseStatusLine("HTTP/1.1 200 OK"), 200);
@@ -117,4 +117,31 @@ test("extra headers do not displace the ones that make it a valid request", () =
 
 	assert.match(bytes, /\r\nHost: ap\.example\.edu\r\n/);
 	assert.match(bytes, /\r\nConnection: close\r\n\r\n$/, "Connection: close has to stay last and present");
+});
+
+test("the editor's unpatched fetch is found when it is stashed", () => {
+	const patched = (): Promise<Response> => Promise.resolve(new Response());
+	const original = (): Promise<Response> => Promise.resolve(new Response());
+
+	assert.equal(unpatchedFetch({ fetch: patched, __vscodeOriginalFetch: original }), original);
+});
+
+test("no unpatched fetch is reported when there is nothing to compare", () => {
+	const same = (): Promise<Response> => Promise.resolve(new Response());
+
+	// Not patched at all: the stash holds the very function in use, so
+	// timing both would compare something with itself.
+	assert.equal(unpatchedFetch({ fetch: same, __vscodeOriginalFetch: same }), undefined);
+	assert.equal(unpatchedFetch({ fetch: same }), undefined);
+	assert.equal(unpatchedFetch({ fetch: same, __vscodeOriginalFetch: "not a function" }), undefined);
+});
+
+test("the fetch probe sends the headers it was given", async () => {
+	let seen: Headers | undefined;
+	await fetchGet("https://ap.example.edu/x", async (_input, init) => {
+		seen = new Headers(init?.headers);
+		return new Response("{}");
+	}, 1_000, { Authorization: "Bearer t" });
+
+	assert.equal(seen?.get("Authorization"), "Bearer t", "an unauthenticated probe is not the same request");
 });
