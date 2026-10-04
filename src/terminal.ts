@@ -37,7 +37,9 @@ export class JobTerminal implements vscode.Pseudoterminal {
 	constructor(
 		private readonly baseUrl: string,
 		private readonly token: TokenSource,
-		private readonly jobId: string
+		private readonly jobId: string,
+		/** So a failure is in the log as well as in the terminal. */
+		private readonly log: (message: string) => void = () => {}
 	) {}
 
 	open(initialDimensions: vscode.TerminalDimensions | undefined): void {
@@ -135,11 +137,20 @@ export class JobTerminal implements vscode.Pseudoterminal {
 		if (this.ended) {
 			return;
 		}
-		this.writeEmitter.fire(`\r\n\x1b[31mCould not open a shell in ${this.jobId}: ${reason}\x1b[0m\r\n`);
-		// Non-zero, so the terminal stays open with the reason in it.
-		// A pseudoterminal that reports a clean exit is disposed, which
-		// for a failure means closing the window the explanation is in.
-		this.end(1);
+		// Marked ended so the socket's own close event does not then
+		// close the terminal, but onDidClose is deliberately NOT
+		// fired. Firing it disposes the terminal whatever exit code it
+		// carries -- that is what the editor does with a
+		// pseudoterminal -- so the terminal would vanish half a second
+		// after opening, taking this message with it and leaving
+		// whatever local shell was there before in view. Which is
+		// exactly how this was first reported.
+		this.ended = true;
+		this.log(`Could not open a shell in ${this.jobId}: ${reason}`);
+		this.writeEmitter.fire(
+			`\r\n\x1b[31mCould not open a shell in ${this.jobId}: ${reason}\x1b[0m\r\n` +
+				`\r\nThis terminal is left open so the reason can be read. Close it when done.\r\n`
+		);
 	}
 
 	/** End the session once. Later attempts are the same end arriving twice. */

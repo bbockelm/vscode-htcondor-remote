@@ -72,7 +72,11 @@ interface Terminal {
 }
 
 /** Load JobTerminal against the stubs and build one. */
-function openTerminal(): { written: string[]; closes: (number | undefined)[]; socket: () => FakeSocket } {
+function openTerminal(logged: string[] = []): {
+	written: string[];
+	closes: (number | undefined)[];
+	socket: () => FakeSocket;
+} {
 	const vscode = vscodeStub();
 	const ws = wsStub();
 	const loader = Module as unknown as { _load: (request: string, ...rest: unknown[]) => unknown };
@@ -88,7 +92,14 @@ function openTerminal(): { written: string[]; closes: (number | undefined)[]; so
 	};
 
 	const path = join(__dirname, "..", "terminal.js");
-	let module: { JobTerminal: new (base: string, token: () => Promise<string>, id: string) => Terminal };
+	let module: {
+		JobTerminal: new (
+			base: string,
+			token: () => Promise<string>,
+			id: string,
+			log: (message: string) => void
+		) => Terminal;
+	};
 	try {
 		// eslint-disable-next-line @typescript-eslint/no-var-requires
 		module = require(path);
@@ -98,7 +109,9 @@ function openTerminal(): { written: string[]; closes: (number | undefined)[]; so
 	}
 
 	latest = undefined;
-	const terminal = new module.JobTerminal("https://ap.example.edu", async () => "token", "1234.0");
+	const terminal = new module.JobTerminal("https://ap.example.edu", async () => "token", "1234.0", (m) =>
+		logged.push(m)
+	);
 	const written: string[] = [];
 	const closes: (number | undefined)[] = [];
 	terminal.onDidWrite((text) => written.push(text));
@@ -119,19 +132,21 @@ function openTerminal(): { written: string[]; closes: (number | undefined)[]; so
 /** The socket is built after an await, so let the microtasks run. */
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
-test("a failed connection closes the terminal exactly once, with a non-zero code", async () => {
-	// Both events arrive when a connection fails, and firing onDidClose
-	// for each was the bug: the second carried no exit code, VS Code
-	// read that as a clean exit and disposed the terminal, and the
-	// error message went with it. What the user saw was the terminal
-	// panel showing whatever shell had been there before.
-	const { closes, socket } = openTerminal();
+test("a failed connection leaves the terminal open with the reason in it", async () => {
+	// The editor disposes a pseudoterminal as soon as onDidClose
+	// fires, whatever exit code it carries. Firing it on a failure
+	// therefore destroys the window the explanation is in: the
+	// terminal appeared for half a second and vanished, leaving
+	// whatever local shell was there before in view. Which is exactly
+	// how this was reported -- twice.
+	const { closes, written, socket } = openTerminal();
 	await settle();
 
 	socket().emit("error", new Error("connection refused"));
 	socket().emit("close");
 
-	assert.deepEqual(closes, [1], "one close, non-zero so the terminal stays open with the reason in it");
+	assert.deepEqual(closes, [], "the terminal must stay open, or the reason cannot be read");
+	assert.match(written.join(""), /connection refused/);
 });
 
 test("the reason a connection failed is written where the user can read it", async () => {
@@ -164,4 +179,15 @@ test("a shell that exits normally closes the terminal once", async () => {
 	socket().emit("close");
 
 	assert.deepEqual(closes, [0], "the exit message ends it; the socket closing afterwards is the same end");
+});
+
+test("a failure is logged as well as shown, so it survives the terminal", async () => {
+	const logged: string[] = [];
+	const { socket } = openTerminal(logged);
+	await settle();
+
+	socket().emit("error", new Error("the access point refused the connection (409)"));
+
+	assert.equal(logged.length, 1);
+	assert.match(logged[0], /409/);
 });

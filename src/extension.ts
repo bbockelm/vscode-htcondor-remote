@@ -297,7 +297,7 @@ export function activate(context: vscode.ExtensionContext): void {
 				// hard to tell apart at a glance.
 				name: `${id} @ ${where}`,
 				iconPath: new vscode.ThemeIcon("server"),
-				pty: new JobTerminal(serverUrl(), () => auth.token(), id),
+				pty: new JobTerminal(serverUrl(), () => auth.token(), id, (message) => output.warn(message)),
 			});
 			terminal.show();
 		}),
