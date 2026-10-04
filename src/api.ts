@@ -55,6 +55,16 @@ export function resolveBaseUrl(base: BaseUrl): string {
 	return typeof base === "string" ? base : base();
 }
 
+/** What POST /api/v1/jobs/{id}/warm answers. */
+export interface WarmResult {
+	ready: boolean;
+	/** True when there already was a connection, so nothing was paid for. */
+	reused: boolean;
+	elapsedMs: number;
+	/** How long the connection stays warm with nothing using it. */
+	idleTimeoutSeconds: number;
+}
+
 /** Supplies a bearer token, refreshing it if need be. */
 export type TokenSource = () => Promise<string>;
 
@@ -251,6 +261,43 @@ export class HTCondorApi {
 	 * Only half a submission for most jobs: see submit.ts. The queue
 	 * accepts this and then holds the job until its input is spooled.
 	 */
+	/**
+	 * Ask the access point to open its connection into a job now.
+	 *
+	 * Remote-SSH has its own deadline for a whole connection, and the
+	 * access point builds the transport to the execute node inside it:
+	 * a schedd query, a CEDAR connection and an SSH handshake. When
+	 * that does not fit, the connection is what gives way -- and the
+	 * retry succeeds, because the attempt that timed out left a warm
+	 * transport behind. This is that attempt, made on purpose, with a
+	 * timeout of ours rather than Remote-SSH's.
+	 *
+	 * `undefined` means the access point does not have the endpoint,
+	 * which is not a failure: it is a server older than this feature,
+	 * and connecting without warming is exactly what used to happen.
+	 */
+	async warmJob(id: string, timeoutMs: number): Promise<WarmResult | undefined> {
+		try {
+			const body = await this.request<{
+				ready?: boolean;
+				reused?: boolean;
+				elapsed_ms?: number;
+				idle_timeout_seconds?: number;
+			}>("POST", `/api/v1/jobs/${encodeURIComponent(id)}/warm`, undefined, timeoutMs);
+			return {
+				ready: body.ready !== false,
+				reused: body.reused === true,
+				elapsedMs: body.elapsed_ms ?? 0,
+				idleTimeoutSeconds: body.idle_timeout_seconds ?? 0,
+			};
+		} catch (err: unknown) {
+			if (err instanceof ApiError && (err.status === 404 || err.status === 405)) {
+				return undefined;
+			}
+			throw err;
+		}
+	}
+
 	async submit(submitFile: string): Promise<{ clusterId: number; jobIds: string[] }> {
 		const body = await this.request<{ cluster_id: number; job_ids?: string[] }>(
 			"POST",
@@ -326,7 +373,8 @@ export class HTCondorApi {
 		await this.request<unknown>("DELETE", `/api/v1/jobs/${encodeURIComponent(id)}`);
 	}
 
-	private async request<T>(method: string, path: string, payload?: unknown): Promise<T> {
+	private async request<T>(method: string, path: string, payload?: unknown, timeoutMs?: number): Promise<T> {
+		const deadline = timeoutMs ?? this.timeoutMs;
 		const startedAt = Date.now();
 		const headers: Record<string, string> = {
 			Authorization: `Bearer ${await this.token()}`,
@@ -344,7 +392,7 @@ export class HTCondorApi {
 			response = await this.fetchImpl(new URL(path, resolveBaseUrl(this.baseUrl)), {
 				method,
 				headers,
-				signal: AbortSignal.timeout(this.timeoutMs),
+				signal: AbortSignal.timeout(deadline),
 				...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
 			});
 		} catch (err: unknown) {
@@ -355,7 +403,7 @@ export class HTCondorApi {
 				throw new ApiError(
 					0,
 					"",
-					`The access point did not answer within ${this.timeoutMs / 1000}s (${method} ${path})`
+					`The access point did not answer within ${deadline / 1000}s (${method} ${path})`
 				);
 			}
 			this.trace(timing(method, path, tokenMs, Date.now() - sentAt, "failed"));

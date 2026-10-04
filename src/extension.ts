@@ -23,6 +23,7 @@ import { JobWatch } from "./watch";
 import { JobLogs } from "./logsView";
 import { planSubmit, submitWarning } from "./submit";
 import { JobTerminal } from "./terminal";
+import { describeWarm, WARM_TIMEOUT_MS, warmTarget } from "./warmup";
 import { configureHttp } from "./http";
 import { accessPointLabel, canonicalAccessPoint, insecureAccessPoint } from "./accessPoints";
 import { ACCESS_POINTS_SETTING, CurrentAccessPoint } from "./currentAccessPoint";
@@ -351,7 +352,7 @@ async function connect(
 
 	await vscode.window.withProgress(
 		{ location: vscode.ProgressLocation.Notification, title: "Preparing an HTCondor session" },
-		async () => {
+		async (progress) => {
 			const ca = await api.certificateAuthority();
 			const gateway = resolveGateway(ca.gatewayHost, ca.gatewayPort);
 			const paths = await certificates.ensure();
@@ -385,6 +386,27 @@ async function connect(
 			const inNewWindow =
 				vscode.workspace.getConfiguration("htcondor").get<string>("openIn", "currentWindow") === "newWindow";
 
+			// Before handing over to Remote-SSH, not after: everything
+			// the access point has to do to reach the job is done here,
+			// under a deadline of ours, so that what is left inside
+			// Remote-SSH's deadline is the SSH hop to the gateway.
+			const job = warmTarget(target);
+			if (job) {
+				progress.report({ message: `Opening a connection to job ${job}` });
+				try {
+					output.info(describeWarm(job, await api.warmJob(job, WARM_TIMEOUT_MS)));
+				} catch (err: unknown) {
+					// Never fatal. Warming is an optimisation, and
+					// refusing to connect because it failed would turn
+					// a slow connection into no connection.
+					output.warn(
+						`Could not open a connection to job ${job} in advance ` +
+							`(${describe(err)}); connecting anyway`
+					);
+				}
+			}
+
+			progress.report({ message: `Starting VS Code in ${alias}` });
 			output.info(
 				`Connecting to ${alias} via ${gateway.host}:${gateway.port} ` +
 					`(${inNewWindow ? "new window" : "this window"})`
