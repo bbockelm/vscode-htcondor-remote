@@ -365,3 +365,74 @@ test("the message bar is assigned, never deleted", async () => {
 	);
 	assert.match(String(shown()), /the access point said no/);
 });
+
+test("a request that has not come back is reported while it is still waiting", async () => {
+	// The moment worth measuring is during the stall. Afterwards
+	// whatever was being initialised is initialised, and a second
+	// measurement says nothing about the first.
+	const fired: Array<{ path: string; waitedMs: number; outstanding: boolean }> = [];
+	let done = false;
+	const slow: typeof fetch = () =>
+		new Promise((resolve) => {
+			setTimeout(() => {
+				done = true;
+				resolve(new Response(JSON.stringify({ jobs: [] })));
+			}, 120);
+		});
+
+	const api = new HTCondorApi(
+		"https://ap.example.edu",
+		async () => "t",
+		slow,
+		undefined,
+		() => {},
+		(_method, path, waitedMs) => fired.push({ path, waitedMs, outstanding: !done }),
+		30
+	);
+
+	await api.listJobs();
+
+	assert.equal(fired.length, 1, "the watchdog should have fired once");
+	assert.equal(fired[0].outstanding, true, "it fired after the request finished, which is too late to be useful");
+	assert.match(fired[0].path, /\/api\/v1\/jobs/);
+});
+
+test("a quick request never triggers the watchdog", async () => {
+	// It has to cost nothing in the ordinary case, or every window
+	// pays for a diagnostic it does not need.
+	const fired: string[] = [];
+	const api = new HTCondorApi(
+		"https://ap.example.edu",
+		async () => "t",
+		async () => new Response(JSON.stringify({ jobs: [] })),
+		undefined,
+		() => {},
+		(_m, path) => fired.push(path),
+		50
+	);
+
+	await api.listJobs();
+	await new Promise((resolve) => setTimeout(resolve, 120));
+
+	assert.deepEqual(fired, [], "a request that answered should not be investigated afterwards");
+});
+
+test("the watchdog fires once, not on every slow request", async () => {
+	const fired: string[] = [];
+	const slow: typeof fetch = () =>
+		new Promise((resolve) => setTimeout(() => resolve(new Response("{}")), 80));
+	const api = new HTCondorApi(
+		"https://ap.example.edu",
+		async () => "t",
+		slow,
+		undefined,
+		() => {},
+		(_m, path) => fired.push(path),
+		20
+	);
+
+	await api.listJobs();
+	await api.listJobs();
+
+	assert.equal(fired.length, 1, "one explanation is a diagnosis; one per request is a log flood");
+});

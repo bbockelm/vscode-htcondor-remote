@@ -104,6 +104,15 @@ const REQUEST_TIMEOUT_MS = 30_000;
  */
 const SLOW_REQUEST_MS = 2_000;
 
+/**
+ * How long a request may be outstanding before it is worth looking
+ * into while it is still outstanding.
+ *
+ * Five seconds: a queue listing across a continent is well under it,
+ * and what is being caught is twenty-five.
+ */
+const STILL_WAITING_MS = 5_000;
+
 export class HTCondorApi {
 	constructor(
 		private readonly baseUrl: BaseUrl,
@@ -117,8 +126,22 @@ export class HTCondorApi {
 		private readonly timeoutMs: number = REQUEST_TIMEOUT_MS,
 		// Not a vscode.LogOutputChannel: this module has no editor in
 		// it and should stay that way.
-		private readonly trace: (message: string) => void = () => {}
+		private readonly trace: (message: string) => void = () => {},
+		/**
+		 * Called when a request has been outstanding this long without
+		 * an answer, once per client.
+		 *
+		 * The moment worth looking at is while a request is stuck, not
+		 * after it finishes: by then whatever was being initialised is
+		 * initialised, and a second measurement says nothing about the
+		 * first.
+		 */
+		private readonly onStillWaiting: (method: string, path: string, waitedMs: number) => void = () => {},
+		private readonly stillWaitingAfterMs: number = STILL_WAITING_MS
 	) {}
+
+	/** So the watchdog above fires at most once. */
+	private warnedWaiting = false;
 
 	/**
 	 * Whether a request has completed yet.
@@ -398,6 +421,18 @@ export class HTCondorApi {
 		const tokenMs = Date.now() - startedAt;
 		const sentAt = Date.now();
 
+		// Armed before the request and cleared after it, so it only
+		// fires while the request really is outstanding.
+		let watchdog: NodeJS.Timeout | undefined;
+		if (!this.warnedWaiting) {
+			watchdog = setTimeout(() => {
+				this.warnedWaiting = true;
+				this.onStillWaiting(method, path, this.stillWaitingAfterMs);
+			}, this.stillWaitingAfterMs);
+			// Nothing should be kept alive by a diagnostic.
+			watchdog.unref?.();
+		}
+
 		let response: Response;
 		try {
 			response = await this.fetchImpl(new URL(path, resolveBaseUrl(this.baseUrl)), {
@@ -407,6 +442,7 @@ export class HTCondorApi {
 				...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
 			});
 		} catch (err: unknown) {
+			clearTimeout(watchdog);
 			// A timeout arrives as an abort, which says nothing about
 			// what was being waited for.
 			if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
@@ -428,6 +464,7 @@ export class HTCondorApi {
 			this.trace(timing(method, path, tokenMs, Date.now() - sentAt, "failed", sentAt));
 			throw err;
 		}
+		clearTimeout(watchdog);
 		const waitMs = Date.now() - sentAt;
 		const first = !this.answered;
 		this.answered = true;

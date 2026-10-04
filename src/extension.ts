@@ -32,15 +32,6 @@ import { migrateUnscopedSecrets } from "./migrate";
 import { TOKENS_KEY } from "./tokens";
 import { aliasFor, HostSpec, writeSSHConfig } from "./sshconfig";
 
-/**
- * Above this, a first request is worth explaining rather than only
- * recording.
- *
- * Five seconds: a queue listing across a continent is well under it,
- * and the thing being diagnosed is twenty-five.
- */
-const SLOW_FIRST_REQUEST_MS = 5_000;
-
 export function activate(context: vscode.ExtensionContext): void {
 	const output = vscode.window.createOutputChannel("HTCondor", { log: true });
 	context.subscriptions.push(output);
@@ -68,22 +59,49 @@ export function activate(context: vscode.ExtensionContext): void {
 	// the same machine answers in under a second. Both ends of that
 	// are worth naming once it happens, because the two candidates
 	// have different owners and the user can rule one out in a minute.
-	let saidWhyItMightBeSlow = false;
-	const explainIfSlow = (message: string): void => {
-		output.info(message);
-		const waited = /and (\d+)ms waiting/.exec(message);
-		if (saidWhyItMightBeSlow || !waited || Number(waited[1]) < SLOW_FIRST_REQUEST_MS) {
-			return;
-		}
-		saidWhyItMightBeSlow = true;
-		output.warn(
-			`That first request took ${Math.round(Number(waited[1]) / 1000)}s. If the same request from a ` +
-				`terminal on this machine is quick, the time was not spent at the access point: ` +
-				(proxySupport === "override"
-					? "try setting `http.proxySupport` to `off` and reloading -- the editor substitutes its " +
-						"own HTTP stack for extensions, and initialising it is paid for by the first request."
-					: "compare the send time above with when the access point's log records the request arriving.")
-		);
+	/**
+	 * Settle who owns a stall, while the stall is happening.
+	 *
+	 * Called when a request has been outstanding for several seconds
+	 * and has not come back. A socket this extension opens itself goes
+	 * nowhere near whatever the editor has put in front of Node's HTTP
+	 * stack, so if that answers immediately while the editor's request
+	 * is still waiting, the two measurements were taken at the same
+	 * instant against the same server and only one of them was slow.
+	 *
+	 * Nothing happens in the ordinary case: this is only armed while a
+	 * request is already late.
+	 */
+	const stillWaiting = (method: string, path: string, waitedMs: number): void => {
+		void (async (): Promise<void> => {
+			const accessPoint = current.url;
+			if (!accessPoint) {
+				return;
+			}
+			output.warn(`${method} ${path} has been waiting ${waitedMs / 1000}s. Checking whether it is the access point.`);
+			const probe = await directGet(
+				new URL("/.well-known/oauth-authorization-server", accessPoint).toString(),
+				userAgent(),
+				15_000
+			);
+			output.warn(describeTimings("Meanwhile, over a socket this extension opened", probe));
+			if (probe.error !== undefined || probe.totalMs >= waitedMs) {
+				output.warn(
+					"The access point is slow to answer this extension too, so the time is being spent " +
+						"reaching it rather than inside the editor."
+				);
+				return;
+			}
+			output.warn(
+				`The access point answered in ${probe.totalMs}ms while the editor's request was still ` +
+					`waiting, so the time is not being spent at the access point. ` +
+					(proxySupport === "override"
+						? "`http.proxySupport` is `override`: the editor substitutes its own HTTP stack for " +
+							"extensions and initialises it on the first request. Setting it to `off` or " +
+							"`fallback` and reloading should remove this delay."
+						: `\`http.proxySupport\` is \`${proxySupport}\`, so something else in the editor's networking is responsible.`)
+			);
+		})();
 	};
 
 	const current = new CurrentAccessPoint(context.globalState);
@@ -99,7 +117,14 @@ export function activate(context: vscode.ExtensionContext): void {
 		})
 	);
 
-	const api = new HTCondorApi(serverUrl, () => auth.token(), undefined, undefined, explainIfSlow);
+	const api = new HTCondorApi(
+		serverUrl,
+		() => auth.token(),
+		undefined,
+		undefined,
+		(message) => output.info(message),
+		stillWaiting
+	);
 	const certificates = new CertificateManager(
 		api,
 		secretKeyStore(context),
