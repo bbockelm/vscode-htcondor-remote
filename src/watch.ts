@@ -5,8 +5,9 @@
 // Idle until you press refresh. The access point already streams the
 // changes; this consumes them.
 
-import { TokenSource } from "./api";
+import { BaseUrl, resolveBaseUrl, TokenSource } from "./api";
 import { EventStreamParser } from "./sse";
+import { http } from "./http";
 
 /** Why a watch stopped, when it stopped for good. */
 export type WatchUnavailable = "no-mirror" | "unauthorized" | "unsupported";
@@ -36,7 +37,7 @@ export class JobWatch {
 	private closed = false;
 
 	constructor(
-		private readonly baseUrl: string,
+		private readonly baseUrl: BaseUrl,
 		private readonly token: TokenSource,
 		private readonly handlers: WatchHandlers
 	) {}
@@ -89,12 +90,12 @@ export class JobWatch {
 		const controller = new AbortController();
 		this.stop = controller;
 
-		const url = new URL("/api/v1/jobs/watch", this.baseUrl);
+		const url = new URL("/api/v1/jobs/watch", resolveBaseUrl(this.baseUrl));
 		if (cursor) {
 			url.searchParams.set("cursor", cursor);
 		}
 
-		const response = await fetch(url, {
+		const response = await http()(url, {
 			headers: {
 				Authorization: `Bearer ${await this.token()}`,
 				Accept: "text/event-stream",

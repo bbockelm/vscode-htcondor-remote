@@ -30,6 +30,7 @@ import {
 	sessionCoversScopes,
 } from "./oauth2";
 import { StoredTokens, TokenStore } from "./tokens";
+import { http } from "./http";
 
 export const AUTH_PROVIDER_ID = "htcondor";
 const CLIENT_SECRET_KEY = "htcondor.oauth2.client";
@@ -167,7 +168,7 @@ export class HTCondorAuthProvider implements vscode.AuthenticationProvider, vsco
 	/** Who the access point says this token belongs to. */
 	private async accountName(accessToken: string): Promise<string> {
 		try {
-			const response = await fetch(new URL("/api/v1/whoami", this.serverUrl()), {
+			const response = await http()(new URL("/api/v1/whoami", this.serverUrl()), {
 				headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
 			});
 			if (response.ok) {

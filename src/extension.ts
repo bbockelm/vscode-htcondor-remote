@@ -23,11 +23,32 @@ import { JobWatch } from "./watch";
 import { JobLogs } from "./logsView";
 import { planSubmit, submitWarning } from "./submit";
 import { JobTerminal } from "./terminal";
+import { configureHttp } from "./http";
 import { HostSpec, writeSSHConfig } from "./sshconfig";
 
 export function activate(context: vscode.ExtensionContext): void {
 	const output = vscode.window.createOutputChannel("HTCondor", { log: true });
 	context.subscriptions.push(output);
+
+	// Before anything can make a request. Every outbound call picks
+	// this up through `http()`, so an access point's log shows which
+	// extension and which version asked, rather than `node`.
+	const version = String((context.extension.packageJSON as { version?: string }).version ?? "0.0.0");
+	configureHttp(version, vscode.version);
+	output.info(`HTCondor extension ${version} on VS Code ${vscode.version}`);
+	// Logged because the editor does not use Node's fetch as it
+	// comes: with proxy support on, it substitutes its own agent and
+	// its own view of the system certificates, and that is the only
+	// thing between this extension and the network that a plain
+	// `node` script does not have. A first request that stalls for
+	// half a minute without ever reaching the access point is most
+	// easily explained there, and the setting is the first thing to
+	// know when one does.
+	const httpConfig = vscode.workspace.getConfiguration("http");
+	output.info(
+		`Proxy support: ${httpConfig.get<string>("proxySupport", "override")}` +
+			`, proxy: ${httpConfig.get<string>("proxy", "") || "(none)"}`
+	);
 
 	const serverUrl = (): string => {
 		const configured = vscode.workspace.getConfiguration("htcondor").get<string>("serverUrl", "").trim();
@@ -47,7 +68,9 @@ export function activate(context: vscode.ExtensionContext): void {
 		})
 	);
 
-	const api = new HTCondorApi(serverUrl(), () => auth.token());
+	const api = new HTCondorApi(serverUrl, () => auth.token(), undefined, undefined, (message) =>
+		output.info(message)
+	);
 	const certificates = new CertificateManager(api, secretKeyStore(context), context.globalStorageUri.fsPath);
 
 	// Renewal runs on a timer as well as on demand. ssh reads the
@@ -61,7 +84,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	// thousand events in a moment, and re-reading the queue for each
 	// would be a denial of service aimed at ourselves.
 	let pending: NodeJS.Timeout | undefined;
-	const watch = new JobWatch(serverUrl(), () => auth.token(), {
+	const watch = new JobWatch(serverUrl, () => auth.token(), {
 		onChange: () => {
 			if (pending) {
 				return;

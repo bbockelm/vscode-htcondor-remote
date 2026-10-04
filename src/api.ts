@@ -5,6 +5,8 @@
 // and its output into an extension whose whole selling point is that it
 // needs nothing installed.
 
+import { http } from "./http";
+
 /** What GET /api/v1/ssh/ca answers. */
 export interface SSHCertificateAuthority {
 	/** The CA in authorized_keys form. */
@@ -38,6 +40,21 @@ export interface SSHCertificate {
 	fingerprint: string;
 }
 
+/**
+ * Where the access point is.
+ *
+ * A function as well as a string because reading the setting at
+ * activation made a missing setting fatal: `activate` threw before it
+ * had registered anything, so a fresh install had no tree, no commands
+ * and not even the welcome view telling the user what to configure --
+ * indistinguishable from the extension not being installed.
+ */
+export type BaseUrl = string | (() => string);
+
+export function resolveBaseUrl(base: BaseUrl): string {
+	return typeof base === "string" ? base : base();
+}
+
 /** Supplies a bearer token, refreshing it if need be. */
 export type TokenSource = () => Promise<string>;
 
@@ -66,17 +83,31 @@ export class ApiError extends Error {
  */
 const REQUEST_TIMEOUT_MS = 30_000;
 
+/**
+ * Above this, a request is worth a line in the log.
+ *
+ * There is a stall on the first request of a fresh window that the
+ * access point never sees -- nothing reaches its log -- so the time has
+ * to be accounted for on this side. Splitting the wait into "getting a
+ * token" and "waiting for the server" is the whole point: the two have
+ * nothing in common and one line says which it was.
+ */
+const SLOW_REQUEST_MS = 2_000;
+
 export class HTCondorApi {
 	constructor(
-		private readonly baseUrl: string,
+		private readonly baseUrl: BaseUrl,
 		private readonly token: TokenSource,
-		private readonly fetchImpl: typeof fetch = fetch,
+		private readonly fetchImpl: typeof fetch = http(),
 		// Settable so a test can use a deadline it can actually wait
 		// for. A test asserting the production thirty seconds would
 		// have to take thirty seconds, so it would be written to time
 		// out first instead -- and then it fails whether or not the
 		// timeout works.
-		private readonly timeoutMs: number = REQUEST_TIMEOUT_MS
+		private readonly timeoutMs: number = REQUEST_TIMEOUT_MS,
+		// Not a vscode.LogOutputChannel: this module has no editor in
+		// it and should stay that way.
+		private readonly trace: (message: string) => void = () => {}
 	) {}
 
 	async certificateAuthority(): Promise<SSHCertificateAuthority> {
@@ -291,6 +322,7 @@ export class HTCondorApi {
 	}
 
 	private async request<T>(method: string, path: string, payload?: unknown): Promise<T> {
+		const startedAt = Date.now();
 		const headers: Record<string, string> = {
 			Authorization: `Bearer ${await this.token()}`,
 			Accept: "application/json",
@@ -299,9 +331,12 @@ export class HTCondorApi {
 			headers["Content-Type"] = "application/json";
 		}
 
+		const tokenMs = Date.now() - startedAt;
+		const sentAt = Date.now();
+
 		let response: Response;
 		try {
-			response = await this.fetchImpl(new URL(path, this.baseUrl), {
+			response = await this.fetchImpl(new URL(path, resolveBaseUrl(this.baseUrl)), {
 				method,
 				headers,
 				signal: AbortSignal.timeout(this.timeoutMs),
@@ -311,13 +346,19 @@ export class HTCondorApi {
 			// A timeout arrives as an abort, which says nothing about
 			// what was being waited for.
 			if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
+				this.trace(timing(method, path, tokenMs, Date.now() - sentAt, "gave up"));
 				throw new ApiError(
 					0,
 					"",
 					`The access point did not answer within ${this.timeoutMs / 1000}s (${method} ${path})`
 				);
 			}
+			this.trace(timing(method, path, tokenMs, Date.now() - sentAt, "failed"));
 			throw err;
+		}
+		const waitMs = Date.now() - sentAt;
+		if (tokenMs + waitMs >= SLOW_REQUEST_MS) {
+			this.trace(timing(method, path, tokenMs, waitMs, String(response.status)));
 		}
 
 		const text = await response.text();
@@ -336,6 +377,11 @@ export class HTCondorApi {
 			throw new ApiError(response.status, text, `${method} ${path} did not return JSON`);
 		}
 	}
+}
+
+/** One line accounting for where a request's time went. */
+function timing(method: string, path: string, tokenMs: number, waitMs: number, outcome: string): string {
+	return `${method} ${path}: ${outcome} after ${tokenMs}ms getting a token and ${waitMs}ms waiting for the access point`;
 }
 
 /**

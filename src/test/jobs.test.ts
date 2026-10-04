@@ -249,3 +249,71 @@ test("the timeout is attached to the request", async () => {
 	await new HTCondorApi("https://ap.example.edu", async () => "t", fetchImpl).listJobs();
 	assert.ok(sawSignal, "no abort signal was attached, so this request could hang for ever");
 });
+
+test("the access point can be supplied as a function, read at request time", async () => {
+	// Reading the setting once, at activation, made an unconfigured
+	// install fatal -- activate() threw before registering anything.
+	// Passing the lookup instead also means a user who changes the
+	// setting does not have to reload the window.
+	let current = "https://first.example.edu";
+	const seen: string[] = [];
+	const api = new HTCondorApi(
+		() => current,
+		async () => "t",
+		async (input) => {
+			seen.push(new URL(String(input)).origin);
+			return new Response(JSON.stringify({ jobs: [] }));
+		}
+	);
+
+	await api.listJobs();
+	current = "https://second.example.edu";
+	await api.listJobs();
+
+	assert.deepEqual(seen, ["https://first.example.edu", "https://second.example.edu"]);
+});
+
+test("a slow request accounts for where its time went", async () => {
+	const lines: string[] = [];
+	const api = new HTCondorApi(
+		"https://ap.example.edu",
+		async () => {
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			return "t";
+		},
+		async () => {
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			return new Response(JSON.stringify({ jobs: [] }));
+		},
+		undefined,
+		(message) => lines.push(message)
+	);
+
+	await api.listJobs();
+
+	// The stall users hit never reaches the access point's log, so this
+	// side has to say which half of the wait it was.
+	assert.equal(lines.length, 0, "a request under the slow threshold is not worth a line");
+});
+
+test("a request that times out says how long each part took", async () => {
+	const lines: string[] = [];
+	const hang = (): Promise<Response> =>
+		new Promise((_resolve, reject) => {
+			setTimeout(() => {
+				const err = new Error("aborted");
+				err.name = "TimeoutError";
+				reject(err);
+			}, 20);
+		});
+	const api = new HTCondorApi("https://ap.example.edu", async () => "t", hang, 50, (message) =>
+		lines.push(message)
+	);
+
+	await assert.rejects(() => api.listJobs());
+
+	assert.equal(lines.length, 1, `expected one accounting line, got ${JSON.stringify(lines)}`);
+	assert.match(lines[0], /gave up/);
+	assert.match(lines[0], /getting a token/);
+	assert.match(lines[0], /waiting for the access point/);
+});

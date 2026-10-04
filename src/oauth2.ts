@@ -21,6 +21,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { createServer, Server } from "node:http";
 import { AddressInfo } from "node:net";
 
+import { http } from "./http";
+
 /** The endpoints this client uses, from RFC 8414 discovery. */
 export interface Discovery {
 	authorizationEndpoint: string;
@@ -136,7 +138,7 @@ export class TokenError extends Error {
 	}
 }
 
-export async function discover(baseUrl: string, fetchImpl: typeof fetch = fetch): Promise<Discovery> {
+export async function discover(baseUrl: string, fetchImpl: typeof fetch = http()): Promise<Discovery> {
 	const url = new URL("/.well-known/oauth-authorization-server", baseUrl);
 	const response = await fetchImpl(url, {
 		headers: { Accept: "application/json" },
@@ -182,7 +184,7 @@ export async function discover(baseUrl: string, fetchImpl: typeof fetch = fetch)
  */
 export async function register(
 	discovery: Discovery,
-	fetchImpl: typeof fetch = fetch
+	fetchImpl: typeof fetch = http()
 ): Promise<ClientCredentials> {
 	if (!discovery.registrationEndpoint) {
 		throw new Error(
@@ -353,7 +355,7 @@ export async function exchangeCode(
 	code: string,
 	verifier: string,
 	redirectUri: string,
-	fetchImpl: typeof fetch = fetch
+	fetchImpl: typeof fetch = http()
 ): Promise<Tokens> {
 	return tokenRequest(
 		discovery,
@@ -372,7 +374,7 @@ export async function refreshTokens(
 	discovery: Discovery,
 	client: ClientCredentials,
 	refreshToken: string,
-	fetchImpl: typeof fetch = fetch
+	fetchImpl: typeof fetch = http()
 ): Promise<Tokens> {
 	return tokenRequest(
 		discovery,
