@@ -98,3 +98,23 @@ test("a timing line carries every number it has", () => {
 	assert.match(line, /TLS 90ms/);
 	assert.match(line, /HTTP 200/);
 });
+
+test("the probe can carry the credentials of the request it is comparing against", () => {
+	// Asking for a simpler, unauthenticated document proved less than
+	// it looked: a quick answer there says nothing about an
+	// authenticated query, which is the request that was slow.
+	const bytes = requestBytes(new URL("https://ap.example.edu/api/v1/jobs?limit=200"), "probe/1.0", {
+		Authorization: "Bearer abc.def",
+	});
+
+	assert.match(bytes, /\r\nAuthorization: Bearer abc\.def\r\n/);
+	assert.match(bytes, /^GET \/api\/v1\/jobs\?limit=200 HTTP\/1\.1\r\n/, "and the same URL, query included");
+	assert.ok(bytes.endsWith("\r\n\r\n"));
+});
+
+test("extra headers do not displace the ones that make it a valid request", () => {
+	const bytes = requestBytes(new URL("https://ap.example.edu/x"), "probe/1.0", { Authorization: "Bearer t" });
+
+	assert.match(bytes, /\r\nHost: ap\.example\.edu\r\n/);
+	assert.match(bytes, /\r\nConnection: close\r\n\r\n$/, "Connection: close has to stay last and present");
+});

@@ -110,28 +110,48 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (!accessPoint) {
 				return;
 			}
-			output.warn(`${method} ${path} has been waiting ${waitedMs / 1000}s. Checking whether it is the access point.`);
-			const probe = await directGet(
-				new URL("/.well-known/oauth-authorization-server", accessPoint).toString(),
-				userAgent(),
-				15_000
+			output.warn(
+				`${method} ${path} has been waiting ${waitedMs / 1000}s. Asking for the same thing over a ` +
+					`socket this extension opens itself.`
 			);
-			output.warn(describeTimings("Meanwhile, over a socket this extension opened", probe));
-			if (probe.error !== undefined || probe.totalMs >= waitedMs) {
+			// The same URL and the same credentials, at the same
+			// moment. An earlier version of this asked for a simpler,
+			// unauthenticated document and proved less than it looked:
+			// a quick answer there says nothing about an authenticated
+			// query, which is the request that is slow.
+			let headers: Record<string, string> = {};
+			try {
+				headers = { Authorization: `Bearer ${await auth.token()}` };
+			} catch {
+				// Unauthenticated is still worth timing; it just
+				// cannot distinguish the two cases as sharply.
+			}
+			const probe = await directGet(
+				new URL(path, accessPoint).toString(),
+				userAgent(),
+				Math.max(15_000, waitedMs * 3),
+				headers
+			);
+			output.warn(describeTimings("The same request, over our own socket", probe));
+
+			if (probe.error !== undefined) {
+				output.warn(`The probe could not complete (${probe.error}), so this says nothing either way.`);
+				return;
+			}
+			if (probe.totalMs >= 5_000) {
 				output.warn(
-					"The access point is slow to answer this extension too, so the time is being spent " +
-						"reaching it rather than inside the editor."
+					`The access point took ${probe.totalMs}ms to answer that over a plain socket too, so the ` +
+						`time is being spent at or on the way to the access point -- not in the editor. ` +
+						`Worth checking when its log records this request arriving, rather than how long it ` +
+						`then took: a request that is slow to arrive looks fast in a handler timing.`
 				);
 				return;
 			}
 			output.warn(
-				`The access point answered in ${probe.totalMs}ms while the editor's request was still ` +
-					`waiting, so the time is not being spent at the access point. ` +
-					(proxySupport === "override"
-						? "`http.proxySupport` is `override`: the editor substitutes its own HTTP stack for " +
-							"extensions and initialises it on the first request. Setting it to `off` or " +
-							"`fallback` and reloading should remove this delay."
-						: `\`http.proxySupport\` is \`${proxySupport}\`, so something else in the editor's networking is responsible.`)
+				`The access point answered the same authenticated request in ${probe.totalMs}ms while the ` +
+					`editor's copy was still waiting. Same URL, same token, same moment, different HTTP ` +
+					`stack -- so it is the editor's \`fetch\`, not the access point. ` +
+					`\`http.proxySupport\` is \`${proxySupport}\`.`
 			);
 		})();
 	};

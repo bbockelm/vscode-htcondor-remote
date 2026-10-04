@@ -35,27 +35,35 @@ export function parseStatusLine(line: string): number | undefined {
 }
 
 /** A minimal HTTP/1.1 GET, as bytes. */
-export function requestBytes(url: URL, userAgent: string): string {
+export function requestBytes(url: URL, userAgent: string, extra: Readonly<Record<string, string>> = {}): string {
 	// `Connection: close` so the far end ends the response for us and
 	// there is no need to understand chunked encoding or keep-alive.
-	return (
-		`GET ${url.pathname}${url.search} HTTP/1.1\r\n` +
-		`Host: ${url.host}\r\n` +
-		`User-Agent: ${userAgent}\r\n` +
-		`Accept: application/json\r\n` +
-		`Connection: close\r\n\r\n`
-	);
+	const headers = [
+		`Host: ${url.host}`,
+		`User-Agent: ${userAgent}`,
+		`Accept: application/json`,
+		...Object.entries(extra).map(([name, value]) => `${name}: ${value}`),
+		`Connection: close`,
+	];
+	return `GET ${url.pathname}${url.search} HTTP/1.1\r\n${headers.join("\r\n")}\r\n\r\n`;
 }
 
 /**
  * Fetch a URL over a socket this process opens, bypassing anything the
  * editor has put in front of Node's HTTP stack.
  *
- * Unauthenticated on purpose: this measures getting to the access
- * point, and a probe that needed a token could stall on getting one
- * and report that as the access point being slow.
+ * `extra` carries the headers that make the probe the same request as
+ * the one being compared against. Asking for a different, simpler URL
+ * proved less than it looked: a quick answer to an unauthenticated
+ * well-known document says nothing about an authenticated query,
+ * which is the request that was slow.
  */
-export async function directGet(target: string, userAgent: string, timeoutMs: number): Promise<Timings> {
+export async function directGet(
+	target: string,
+	userAgent: string,
+	timeoutMs: number,
+	extra: Readonly<Record<string, string>> = {}
+): Promise<Timings> {
 	const url = new URL(target);
 	const port = url.port === "" ? (url.protocol === "https:" ? 443 : 80) : Number(url.port);
 	const started = Date.now();
@@ -75,7 +83,7 @@ export async function directGet(target: string, userAgent: string, timeoutMs: nu
 
 		const socket: TLSSocket = connect({ host: url.hostname, port, servername: url.hostname }, () => {
 			result.tlsMs = since();
-			socket.write(requestBytes(url, userAgent));
+			socket.write(requestBytes(url, userAgent, extra));
 		});
 		socket.setTimeout(timeoutMs, () => finish({ error: `no answer within ${timeoutMs / 1000}s` }));
 		socket.once("connect", () => {
