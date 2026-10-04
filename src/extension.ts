@@ -24,26 +24,12 @@ import { JobLogs } from "./logsView";
 import { planSubmit, submitWarning } from "./submit";
 import { JobTerminal } from "./terminal";
 import { describeWarm, WARM_TIMEOUT_MS, warmTarget } from "./warmup";
-import { configureHttp, http, userAgent } from "./http";
-import { compare, describeTimings, directGet, fetchGet, unpatchedFetch } from "./probe";
-import { explainBlocking, LoopLag } from "./eventLoop";
+import { configureHttp, unpatchedFetch } from "./http";
 import { accessPointLabel, canonicalAccessPoint, insecureAccessPoint } from "./accessPoints";
 import { ACCESS_POINTS_SETTING, CurrentAccessPoint } from "./currentAccessPoint";
 import { migrateUnscopedSecrets } from "./migrate";
 import { TOKENS_KEY } from "./tokens";
 import { aliasFor, HostSpec, writeSSHConfig } from "./sshconfig";
-
-/** How often to check that the extension host is still running. */
-const LAG_INTERVAL_MS = 250;
-
-/**
- * How long to keep checking.
- *
- * Two minutes: the stall being chased happens in the first moments of
- * a window, and a timer that runs for the life of the editor to
- * answer a question already answered is waste.
- */
-const LAG_WATCH_MS = 120_000;
 
 export function activate(context: vscode.ExtensionContext): void {
 	const output = vscode.window.createOutputChannel("HTCondor", { log: true });
@@ -63,136 +49,48 @@ export function activate(context: vscode.ExtensionContext): void {
 	// half a minute without ever reaching the access point is most
 	// easily explained there, and the setting is the first thing to
 	// know when one does.
-	// All of them, because `proxySupport` is not the only switch and
-	// turning it off did not stop the editor substituting its own
-	// stack. `fetchAdditionalSupport` is the one that patches `fetch`
-	// in particular, and it is on by default and independent.
+	// The editor replaces `fetch` in every extension host to add proxy
+	// support and the operating system's certificates. Measured here
+	// against the function it replaced -- same process, same client,
+	// same connection stack -- the replacement took 17.7 seconds for a
+	// request the original answered in 448ms, on every fresh window.
+	//
+	// So the original is preferred, unless a proxy is configured, in
+	// which case the editor's is the only one that can work. Anything
+	// the settings cannot tell us -- a proxy set in the operating
+	// system, a private certificate authority -- shows up as a failed
+	// request, and the first one hands the job back for good.
 	const httpConfig = vscode.workspace.getConfiguration("http");
-	const proxySupport = httpConfig.get<string>("proxySupport", "override");
-	const httpSettings = [
-		`proxySupport=${proxySupport}`,
-		`proxy=${httpConfig.get<string>("proxy", "") || "(none)"}`,
-		`fetchAdditionalSupport=${httpConfig.get<boolean>("fetchAdditionalSupport", true)}`,
-		`systemCertificates=${httpConfig.get<boolean>("systemCertificates", true)}`,
-		`electronFetch=${httpConfig.get<boolean>("electronFetch", false)}`,
-	];
-	output.info(`Editor HTTP settings: ${httpSettings.join(", ")}`);
-
-	// The first request of a window has been seen to take twenty-five
-	// seconds and then succeed, while the same request from a shell on
-	// the same machine answers in under a second. Both ends of that
-	// are worth naming once it happens, because the two candidates
-	// have different owners and the user can rule one out in a minute.
-	/**
-	 * Settle who owns a stall, while the stall is happening.
-	 *
-	 * Called when a request has been outstanding for several seconds
-	 * and has not come back. A socket this extension opens itself goes
-	 * nowhere near whatever the editor has put in front of Node's HTTP
-	 * stack, so if that answers immediately while the editor's request
-	 * is still waiting, the two measurements were taken at the same
-	 * instant against the same server and only one of them was slow.
-	 *
-	 * Nothing happens in the ordinary case: this is only armed while a
-	 * request is already late.
-	 */
-	// Watch the extension host's own responsiveness. A promise cannot
-	// resolve while the thread is blocked, so from in here a request
-	// that came back quickly and one that took twenty seconds look
-	// identical -- unless something is keeping time.
-	const lag = new LoopLag(LAG_INTERVAL_MS);
-	const lagTimer = setInterval(() => lag.tick(Date.now()), LAG_INTERVAL_MS);
-	lagTimer.unref?.();
-	// Only for as long as the question is open. The stall happens in
-	// the first moments of a window, and a timer running for the life
-	// of the editor to answer a question already answered is waste.
-	const lagStop = setTimeout(() => clearInterval(lagTimer), LAG_WATCH_MS);
-	lagStop.unref?.();
-	context.subscriptions.push({
-		dispose: () => {
-			clearInterval(lagTimer);
-			clearTimeout(lagStop);
-		},
+	const proxyConfigured =
+		(httpConfig.get<string>("proxy", "") ?? "").trim() !== "" ||
+		["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"].some(
+			(name) => (process.env[name] ?? "").trim() !== ""
+		);
+	const forceEditorStack = vscode.workspace
+		.getConfiguration("htcondor")
+		.get<boolean>("useEditorHttpStack", false);
+	const unpatched = unpatchedFetch();
+	const preferUnpatched = !proxyConfigured && !forceEditorStack && unpatched !== undefined;
+	configureHttp(version, vscode.version, {
+		...(unpatched ? { unpatched } : {}),
+		preferUnpatched,
+		onFallback: (reason) =>
+			output.warn(
+				`Going through the editor's HTTP stack from now on: a direct request failed (${reason}). ` +
+					`That is what a proxy or a private certificate authority looks like from here.`
+			),
 	});
-
-	const stillWaiting = (method: string, path: string, waitedMs: number): void => {
-		void (async (): Promise<void> => {
-			const accessPoint = current.url;
-			if (!accessPoint) {
-				return;
-			}
-			output.warn(
-				`${method} ${path} has been waiting ${waitedMs / 1000}s. Asking for the same thing over a ` +
-					`socket this extension opens itself.`
-			);
-			// The same URL and the same credentials, at the same
-			// moment. An earlier version of this asked for a simpler,
-			// unauthenticated document and proved less than it looked:
-			// a quick answer there says nothing about an authenticated
-			// query, which is the request that is slow.
-			let headers: Record<string, string> = {};
-			try {
-				headers = { Authorization: `Bearer ${await auth.token()}` };
-			} catch {
-				// Unauthenticated is still worth timing; it just
-				// cannot distinguish the two cases as sharply.
-			}
-			const probe = await directGet(
-				new URL(path, accessPoint).toString(),
-				userAgent(),
-				Math.max(15_000, waitedMs * 3),
-				headers
-			);
-			output.warn(describeTimings("The same request, over our own socket", probe));
-
-			// The cleanest control available: the editor patches the
-			// global `fetch` in the extension host and keeps the
-			// original on `globalThis.__vscodeOriginalFetch`. Timing
-			// both is the same process, the same client, the same
-			// connection stack -- only the patch differs.
-			const original = unpatchedFetch();
-			if (original) {
-				const before = await fetchGet(new URL(path, accessPoint).toString(), original, 20_000, headers);
-				output.warn(describeTimings("The same request, through the editor's unpatched fetch", before));
-				if (before.error === undefined && before.totalMs < 5_000) {
-					output.warn(
-						`The unpatched \`fetch\` answered in ${before.totalMs}ms. The editor installs its ` +
-							`own \`fetch\` in every extension host and that patch is what the time is going ` +
-							`into -- it is installed whatever \`http.proxySupport\` says, which is why turning ` +
-							`that off changed nothing.`
-					);
-				}
-			} else {
-				output.warn("The editor does not expose an unpatched fetch here, so that comparison is unavailable.");
-			}
-
-			if (probe.error !== undefined) {
-				output.warn(`The probe could not complete (${probe.error}), so this says nothing either way.`);
-				return;
-			}
-			if (probe.totalMs >= 5_000) {
-				output.warn(
-					`The access point took ${probe.totalMs}ms to answer that over a plain socket too, so the ` +
-						`time is being spent at or on the way to the access point -- not in the editor. ` +
-						`Worth checking when its log records this request arriving, rather than how long it ` +
-						`then took: a request that is slow to arrive looks fast in a handler timing.`
-				);
-				return;
-			}
-			output.warn(
-				`The access point answered the same authenticated request in ${probe.totalMs}ms while the ` +
-					`editor's copy was still waiting. Same URL, same token, same moment, different HTTP ` +
-					`stack -- so it is the editor's \`fetch\`, not the access point.`
-			);
-			output.warn(
-				`Settings worth trying, one at a time, reloading after each: ` +
-					`\`http.fetchAdditionalSupport: false\` (this is the one that patches \`fetch\` itself, ` +
-					`separately from \`http.proxySupport\`, and it is on by default), then ` +
-					`\`http.systemCertificates: false\`, then \`http.electronFetch: true\`. Current values: ` +
-					httpSettings.join(", ")
-			);
-		})();
-	};
+	output.info(
+		preferUnpatched
+			? "Requests go straight out; the editor's HTTP stack is kept as a fallback."
+			: `Requests go through the editor's HTTP stack (${
+					proxyConfigured
+						? "a proxy is configured"
+						: forceEditorStack
+							? "htcondor.useEditorHttpStack"
+							: "no unpatched fetch available"
+				}).`
+	);
 
 	const current = new CurrentAccessPoint(context.globalState);
 	context.subscriptions.push(current);
@@ -212,19 +110,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		() => auth.token(),
 		undefined,
 		undefined,
-		(message, timings) => {
-			output.info(message);
-			const finishedAt = timings.sentAt + timings.waitMs;
-			const verdict = explainBlocking(
-				timings.waitMs,
-				lag.blockedBetween(timings.sentAt, finishedAt),
-				lag.worstBetween(timings.sentAt, finishedAt)
-			);
-			if (verdict) {
-				output.warn(verdict);
-			}
-		},
-		stillWaiting
+		(message) => output.warn(message)
 	);
 	const certificates = new CertificateManager(
 		api,
@@ -446,9 +332,6 @@ export function activate(context: vscode.ExtensionContext): void {
 		}),
 		vscode.commands.registerCommand("htcondor.refreshJobs", () => jobs.refresh()),
 		vscode.commands.registerCommand("htcondor.switchAccessPoint", () => switchAccessPoint(current)),
-		vscode.commands.registerCommand("htcondor.diagnoseConnection", () =>
-			diagnoseConnection(current, proxySupport, output)
-		),
 		vscode.commands.registerCommand("htcondor.addAccessPoint", () =>
 			addAccessPointCommand(current, jobs, output, setContext)
 		),
@@ -663,48 +546,6 @@ function splitHostPort(value: string): [string, number] {
 		return [value.slice(0, at), Number(value.slice(at + 1))];
 	}
 	return [value, 22];
-}
-
-/**
- * Time the same request through the editor and around it.
- *
- * Built because a first request was taking twenty-five seconds and
- * then succeeding, the access point's own log showed nothing over
- * half a second, and the same request from a shell was immediate.
- * That leaves the editor's HTTP stack, and this measures it rather
- * than asking the user to change a setting and see.
- */
-async function diagnoseConnection(
-	current: CurrentAccessPoint,
-	proxySupport: string,
-	output: vscode.LogOutputChannel
-): Promise<void> {
-	const accessPoint = current.url;
-	if (!accessPoint) {
-		void vscode.window.showInformationMessage("Add an HTCondor access point first.");
-		return;
-	}
-	// Unauthenticated, and the smallest thing the access point
-	// serves: this measures reaching it, and a probe that needed a
-	// token could stall getting one and report that as the access
-	// point being slow.
-	const target = new URL("/.well-known/oauth-authorization-server", accessPoint).toString();
-
-	await vscode.window.withProgress(
-		{ location: vscode.ProgressLocation.Notification, title: "Timing the connection to the access point" },
-		async () => {
-			output.show(true);
-			output.info(`Connection check against ${target}`);
-			// The editor's stack first, while it is as cold as it is
-			// when a window opens -- doing it second would measure a
-			// stack the direct probe had already warmed.
-			const viaFetch = await fetchGet(target, http(), 60_000);
-			output.info(describeTimings("Through the editor's HTTP stack", viaFetch));
-			const direct = await directGet(target, userAgent(), 60_000);
-			output.info(describeTimings("Over a socket this extension opened", direct));
-			output.warn(compare(direct, viaFetch, proxySupport));
-		}
-	);
 }
 
 /**

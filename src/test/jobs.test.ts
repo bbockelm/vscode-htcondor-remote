@@ -274,25 +274,31 @@ test("the access point can be supplied as a function, read at request time", asy
 	assert.deepEqual(seen, ["https://first.example.edu", "https://second.example.edu"]);
 });
 
-test("the first request is always accounted for, later quick ones are not", async () => {
-	// The first request of a window is the slow one, and it is slow
-	// whether or not anything else is. A line that only appears once
-	// things are already wrong gives nothing to compare against.
+test("a slow request is accounted for, a quick one is not", async () => {
 	const lines: string[] = [];
+	let slow = true;
 	const api = new HTCondorApi(
 		"https://ap.example.edu",
 		async () => "t",
-		async () => new Response(JSON.stringify({ jobs: [] })),
+		async () => {
+			if (slow) {
+				await new Promise((resolve) => setTimeout(resolve, 60));
+			}
+			return new Response(JSON.stringify({ jobs: [] }));
+		},
 		undefined,
-		(message) => lines.push(message)
+		(message) => lines.push(message),
+		40
 	);
 
 	await api.listJobs();
-	assert.equal(lines.length, 1, "the first request should be measured whatever it cost");
-	assert.match(lines[0], /sent at \d{4}-\d{2}-\d{2}T/, "without a send time there is nothing to line up the server log with");
+	assert.equal(lines.length, 1, "a request that took longer than the threshold is worth a line");
+	assert.match(lines[0], /getting a token/);
+	assert.match(lines[0], /waiting for the access point/);
 
+	slow = false;
 	await api.listJobs();
-	assert.equal(lines.length, 1, "a quick request after the first is not worth a line");
+	assert.equal(lines.length, 1, "a quick request is not");
 });
 
 test("a request that times out says how long each part took", async () => {
@@ -366,73 +372,3 @@ test("the message bar is assigned, never deleted", async () => {
 	assert.match(String(shown()), /the access point said no/);
 });
 
-test("a request that has not come back is reported while it is still waiting", async () => {
-	// The moment worth measuring is during the stall. Afterwards
-	// whatever was being initialised is initialised, and a second
-	// measurement says nothing about the first.
-	const fired: Array<{ path: string; waitedMs: number; outstanding: boolean }> = [];
-	let done = false;
-	const slow: typeof fetch = () =>
-		new Promise((resolve) => {
-			setTimeout(() => {
-				done = true;
-				resolve(new Response(JSON.stringify({ jobs: [] })));
-			}, 120);
-		});
-
-	const api = new HTCondorApi(
-		"https://ap.example.edu",
-		async () => "t",
-		slow,
-		undefined,
-		() => {},
-		(_method, path, waitedMs) => fired.push({ path, waitedMs, outstanding: !done }),
-		30
-	);
-
-	await api.listJobs();
-
-	assert.equal(fired.length, 1, "the watchdog should have fired once");
-	assert.equal(fired[0].outstanding, true, "it fired after the request finished, which is too late to be useful");
-	assert.match(fired[0].path, /\/api\/v1\/jobs/);
-});
-
-test("a quick request never triggers the watchdog", async () => {
-	// It has to cost nothing in the ordinary case, or every window
-	// pays for a diagnostic it does not need.
-	const fired: string[] = [];
-	const api = new HTCondorApi(
-		"https://ap.example.edu",
-		async () => "t",
-		async () => new Response(JSON.stringify({ jobs: [] })),
-		undefined,
-		() => {},
-		(_m, path) => fired.push(path),
-		50
-	);
-
-	await api.listJobs();
-	await new Promise((resolve) => setTimeout(resolve, 120));
-
-	assert.deepEqual(fired, [], "a request that answered should not be investigated afterwards");
-});
-
-test("the watchdog fires once, not on every slow request", async () => {
-	const fired: string[] = [];
-	const slow: typeof fetch = () =>
-		new Promise((resolve) => setTimeout(() => resolve(new Response("{}")), 80));
-	const api = new HTCondorApi(
-		"https://ap.example.edu",
-		async () => "t",
-		slow,
-		undefined,
-		() => {},
-		(_m, path) => fired.push(path),
-		20
-	);
-
-	await api.listJobs();
-	await api.listJobs();
-
-	assert.equal(fired.length, 1, "one explanation is a diagnosis; one per request is a log flood");
-});

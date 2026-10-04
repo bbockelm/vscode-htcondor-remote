@@ -65,6 +65,11 @@
           ],
           "default": "currentWindow",
           "description": "Whether connecting to a job reuses this window or opens a new one."
+        },
+        "htcondor.useEditorHttpStack": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Make requests through the editor's own HTTP stack rather than Node's. The editor's adds proxy support and the operating system's certificates, and this extension falls back to it automatically when a direct request fails \u2014 but it has been measured taking 17 seconds for a request the unpatched one answered in under half a second, so it is not used first. Turn this on if your network needs it and the automatic fallback is not catching it."
         }
       }
     },
@@ -150,11 +155,6 @@
       {
         "command": "htcondor.removeAccessPoint",
         "title": "Remove Access Point",
-        "category": "HTCondor"
-      },
-      {
-        "command": "htcondor.diagnoseConnection",
-        "title": "Check Connection Speed",
         "category": "HTCondor"
       }
     ],

@@ -55,13 +55,6 @@ export function resolveBaseUrl(base: BaseUrl): string {
 	return typeof base === "string" ? base : base();
 }
 
-/** Where one request's time went. */
-export interface RequestTimings {
-	sentAt: number;
-	tokenMs: number;
-	waitMs: number;
-}
-
 /** What POST /api/v1/jobs/{id}/warm answers. */
 export interface WarmResult {
 	ready: boolean;
@@ -100,25 +93,8 @@ export class ApiError extends Error {
  */
 const REQUEST_TIMEOUT_MS = 30_000;
 
-/**
- * Above this, a request is worth a line in the log.
- *
- * There is a stall on the first request of a fresh window that the
- * access point never sees -- nothing reaches its log -- so the time has
- * to be accounted for on this side. Splitting the wait into "getting a
- * token" and "waiting for the server" is the whole point: the two have
- * nothing in common and one line says which it was.
- */
+/** Above this, a request is slow enough to be worth a line in the log. */
 const SLOW_REQUEST_MS = 2_000;
-
-/**
- * How long a request may be outstanding before it is worth looking
- * into while it is still outstanding.
- *
- * Five seconds: a queue listing across a continent is well under it,
- * and what is being caught is twenty-five.
- */
-const STILL_WAITING_MS = 5_000;
 
 export class HTCondorApi {
 	constructor(
@@ -133,36 +109,12 @@ export class HTCondorApi {
 		private readonly timeoutMs: number = REQUEST_TIMEOUT_MS,
 		// Not a vscode.LogOutputChannel: this module has no editor in
 		// it and should stay that way.
-		// The timings are passed alongside the line so a caller can
-		// add what only it knows -- how much of the wait the editor
-		// spent unable to run -- without parsing the line back.
-		private readonly trace: (message: string, timings: RequestTimings) => void = () => {},
-		/**
-		 * Called when a request has been outstanding this long without
-		 * an answer, once per client.
-		 *
-		 * The moment worth looking at is while a request is stuck, not
-		 * after it finishes: by then whatever was being initialised is
-		 * initialised, and a second measurement says nothing about the
-		 * first.
-		 */
-		private readonly onStillWaiting: (method: string, path: string, waitedMs: number) => void = () => {},
-		private readonly stillWaitingAfterMs: number = STILL_WAITING_MS
+		private readonly trace: (message: string) => void = () => {},
+		// Settable for the same reason as the timeout above: a test
+		// asserting the production two seconds would have to take two
+		// seconds.
+		private readonly slowRequestMs: number = SLOW_REQUEST_MS
 	) {}
-
-	/** So the watchdog above fires at most once. */
-	private warnedWaiting = false;
-
-	/**
-	 * Whether a request has completed yet.
-	 *
-	 * The first one in a window is the one that is slow, and it is
-	 * slow whether or not anything else is. Logging it unconditionally
-	 * means there is always a measurement to compare the rest against,
-	 * rather than a line that only appears once things are already
-	 * wrong.
-	 */
-	private answered = false;
 
 	/** Where this client is pointed, canonical at the moment it is asked. */
 	get accessPoint(): string {
@@ -431,18 +383,6 @@ export class HTCondorApi {
 		const tokenMs = Date.now() - startedAt;
 		const sentAt = Date.now();
 
-		// Armed before the request and cleared after it, so it only
-		// fires while the request really is outstanding.
-		let watchdog: NodeJS.Timeout | undefined;
-		if (!this.warnedWaiting) {
-			watchdog = setTimeout(() => {
-				this.warnedWaiting = true;
-				this.onStillWaiting(method, path, this.stillWaitingAfterMs);
-			}, this.stillWaitingAfterMs);
-			// Nothing should be kept alive by a diagnostic.
-			watchdog.unref?.();
-		}
-
 		let response: Response;
 		try {
 			response = await this.fetchImpl(new URL(path, resolveBaseUrl(this.baseUrl)), {
@@ -452,13 +392,11 @@ export class HTCondorApi {
 				...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
 			});
 		} catch (err: unknown) {
-			clearTimeout(watchdog);
 			// A timeout arrives as an abort, which says nothing about
 			// what was being waited for.
 			if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
 				const waited = Date.now() - sentAt;
-				this.answered = true;
-				this.trace(timing(method, path, tokenMs, waited, "gave up", sentAt), { sentAt, tokenMs, waitMs: waited });
+				this.trace(timing(method, path, tokenMs, waited, "gave up"));
 				// The split is in the message, not only in the log,
 				// because this message is what gets read and reported
 				// -- and "getting a token" and "waiting for the access
@@ -470,25 +408,12 @@ export class HTCondorApi {
 						`(${method} ${path}; ${tokenMs}ms getting a token, ${waited}ms waiting)`
 				);
 			}
-			this.answered = true;
-			const failedAfter = Date.now() - sentAt;
-			this.trace(timing(method, path, tokenMs, failedAfter, "failed", sentAt), {
-				sentAt,
-				tokenMs,
-				waitMs: failedAfter,
-			});
+			this.trace(timing(method, path, tokenMs, Date.now() - sentAt, "failed"));
 			throw err;
 		}
-		clearTimeout(watchdog);
 		const waitMs = Date.now() - sentAt;
-		const first = !this.answered;
-		this.answered = true;
-		if (first || tokenMs + waitMs >= SLOW_REQUEST_MS) {
-			this.trace(timing(method, path, tokenMs, waitMs, String(response.status), sentAt), {
-				sentAt,
-				tokenMs,
-				waitMs,
-			});
+		if (tokenMs + waitMs >= this.slowRequestMs) {
+			this.trace(timing(method, path, tokenMs, waitMs, String(response.status)));
 		}
 
 		const text = await response.text();
@@ -510,27 +435,15 @@ export class HTCondorApi {
 }
 
 /**
- * One line accounting for where a request's time went.
+ * One line accounting for where a slow request's time went.
  *
- * `sentAt` is in it so the line can be put beside the access point's
- * own log. That comparison is the one that settles where a slow
- * request was slow: if the server recorded it arriving at this time
- * and answering 25 seconds later, the time was spent there; if it
- * recorded it arriving 25 seconds after this time, the request had
- * not left the editor yet.
+ * The split is the point: getting a token and waiting for the access
+ * point are different faults with different owners.
  */
-function timing(
-	method: string,
-	path: string,
-	tokenMs: number,
-	waitMs: number,
-	outcome: string,
-	sentAt: number
-): string {
-	const clock = new Date(sentAt).toISOString();
+function timing(method: string, path: string, tokenMs: number, waitMs: number, outcome: string): string {
 	return (
 		`${method} ${path}: ${outcome} after ${tokenMs}ms getting a token ` +
-		`and ${waitMs}ms waiting for the access point (sent at ${clock})`
+		`and ${waitMs}ms waiting for the access point`
 	);
 }
 
