@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
@@ -22,6 +22,9 @@ class MemoryKeyStore implements KeyStore {
 	}
 	async store(key: string, value: string) {
 		this.values.set(key, value);
+	}
+	async delete(key: string) {
+		this.values.delete(key);
 	}
 }
 
@@ -194,4 +197,54 @@ test("asks for a short lifetime rather than taking the default", async () => {
 
 	assert.deepEqual(calls.lifetimes, [LIFETIME_SECONDS], "the request did not carry our lifetime");
 	assert.ok(LIFETIME_SECONDS <= 30 * 60, `${LIFETIME_SECONDS}s is not short`);
+});
+
+test("switching access point gets a certificate from the new one", async () => {
+	// A certificate is signed by one access point's CA and names an
+	// account on it. Reusing a perfectly unexpired one against another
+	// access point is a login failure nobody can explain.
+	const calls: Calls = { ca: 0, sign: 0, signedKeys: [], lifetimes: [] };
+	const expiry = new Date(Date.now() + LIFETIME_SECONDS * 1000);
+	let where = "https://ap1.example.edu";
+	const mgr = new CertificateManager(
+		fakeApi(calls, () => expiry),
+		new MemoryKeyStore(),
+		dir,
+		undefined,
+		() => where
+	);
+
+	const first = await mgr.ensure();
+	assert.equal(calls.sign, 1);
+
+	// Still valid for its whole lifetime, so nothing but the access
+	// point having changed should cause another signing request.
+	await mgr.ensure();
+	assert.equal(calls.sign, 1, "an unexpired certificate for the same access point is reused");
+
+	where = "https://ap2.example.edu";
+	const second = await mgr.ensure();
+
+	assert.equal(calls.sign, 2, "the new access point has to sign its own");
+	assert.notEqual(first.privateKey, second.privateKey, "and it is kept somewhere else on disk");
+	assert.match(second.privateKey, /ap2\.example\.edu/);
+});
+
+test("each access point gets its own key, and forgetting one leaves the other", async () => {
+	const calls: Calls = { ca: 0, sign: 0, signedKeys: [], lifetimes: [] };
+	const expiry = new Date(Date.now() + LIFETIME_SECONDS * 1000);
+	const keys = new MemoryKeyStore();
+	let where = "https://ap1.example.edu";
+	const mgr = new CertificateManager(fakeApi(calls, () => expiry), keys, dir, undefined, () => where);
+
+	const first = await mgr.ensure();
+	where = "https://ap2.example.edu";
+	const second = await mgr.ensure();
+
+	assert.notEqual(calls.signedKeys[0], calls.signedKeys[1], "one key per access point");
+
+	await mgr.forgetFor("https://ap1.example.edu");
+
+	assert.equal(existsSync(first.privateKey), false, "the removed access point's key is gone");
+	assert.equal(existsSync(second.privateKey), true, "the other one is untouched");
 });

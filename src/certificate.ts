@@ -28,6 +28,7 @@ import { join } from "node:path";
 
 import { HTCondorApi } from "./api";
 import { encodePublicKey, generateKeyPair } from "./openssh";
+import { accessPointSlug, scopedKey } from "./accessPoints";
 
 /** Where the files live and what they are called. */
 export interface CertificatePaths {
@@ -40,6 +41,7 @@ export interface CertificatePaths {
 export interface KeyStore {
 	get(key: string): Promise<string | undefined>;
 	store(key: string, value: string): Promise<void>;
+	delete(key: string): Promise<void>;
 }
 
 const PRIVATE_KEY_SECRET = "htcondor.ssh.privateKey";
@@ -81,19 +83,34 @@ export const CHECK_INTERVAL_MS = Math.floor((LIFETIME_SECONDS / 6) * 1000);
 
 export class CertificateManager {
 	private validBefore: Date | undefined;
+	/** The access point the cached expiry above belongs to. */
+	private issuedBy: string | undefined;
 
 	constructor(
 		private readonly api: HTCondorApi,
 		private readonly keys: KeyStore,
-		private readonly storageDir: string,
-		private readonly now: () => Date = () => new Date()
+		private readonly baseDir: string,
+		private readonly now: () => Date = () => new Date(),
+		/**
+		 * Which access point this is for. A certificate is signed by
+		 * one access point's CA and names an account on it, and its
+		 * known_hosts holds that CA alone, so none of these files can
+		 * be shared with another.
+		 */
+		private readonly accessPoint: () => string = () => ""
 	) {}
 
+	private get storageDir(): string {
+		const slug = accessPointSlug(this.accessPoint());
+		return slug === "" ? this.baseDir : join(this.baseDir, slug);
+	}
+
 	get paths(): CertificatePaths {
+		const dir = this.storageDir;
 		return {
-			privateKey: join(this.storageDir, "id_ecdsa"),
-			certificate: join(this.storageDir, "id_ecdsa-cert.pub"),
-			knownHosts: join(this.storageDir, "known_hosts"),
+			privateKey: join(dir, "id_ecdsa"),
+			certificate: join(dir, "id_ecdsa-cert.pub"),
+			knownHosts: join(dir, "known_hosts"),
 		};
 	}
 
@@ -104,6 +121,12 @@ export class CertificateManager {
 	 * it does nothing when the certificate on hand is still good.
 	 */
 	async ensure(): Promise<CertificatePaths> {
+		// A certificate from the access point we were pointed at a
+		// moment ago is not a certificate for this one, however long
+		// it has left to run.
+		if (this.issuedBy !== this.accessPoint()) {
+			this.validBefore = undefined;
+		}
 		if (this.validBefore && this.validBefore.getTime() - this.now().getTime() > RENEW_BEFORE_MS) {
 			return this.paths;
 		}
@@ -119,13 +142,15 @@ export class CertificateManager {
 		// would be churn without a benefit: it never leaves this machine,
 		// and what expires -- the thing that actually carries the
 		// account name -- is the certificate over it.
-		let privateKeyPem = await this.keys.get(PRIVATE_KEY_SECRET);
+		const keySecret =
+			this.accessPoint() === "" ? PRIVATE_KEY_SECRET : scopedKey(PRIVATE_KEY_SECRET, this.accessPoint());
+		let privateKeyPem = await this.keys.get(keySecret);
 		let publicKeyLine: string | undefined;
 		if (!privateKeyPem) {
 			const pair = generateKeyPair(KEY_COMMENT);
 			privateKeyPem = pair.privateKeyPem;
 			publicKeyLine = pair.publicKeyLine;
-			await this.keys.store(PRIVATE_KEY_SECRET, privateKeyPem);
+			await this.keys.store(keySecret, privateKeyPem);
 		} else {
 			publicKeyLine = publicKeyFromPrivate(privateKeyPem);
 		}
@@ -148,6 +173,7 @@ export class CertificateManager {
 		await writeFile(paths.knownHosts, `${ca.knownHostsLine}\n`, { mode: 0o600 });
 
 		this.validBefore = cert.validBefore;
+		this.issuedBy = this.accessPoint();
 		return paths;
 	}
 
@@ -159,6 +185,24 @@ export class CertificateManager {
 	 * lifetime -- and anything that can read the file can still open a
 	 * shell in the user's jobs with it.
 	 */
+	/**
+	 * Remove the key and certificate held for another access point.
+	 *
+	 * For one being removed from the list, which is usually not the
+	 * one in force.
+	 */
+	async forgetFor(accessPoint: string): Promise<void> {
+		const dir = join(this.baseDir, accessPointSlug(accessPoint));
+		await Promise.all([
+			this.keys.delete(scopedKey(PRIVATE_KEY_SECRET, accessPoint)),
+			rm(dir, { recursive: true, force: true }),
+		]);
+		if (this.issuedBy === accessPoint) {
+			this.validBefore = undefined;
+			this.issuedBy = undefined;
+		}
+	}
+
 	async forget(): Promise<void> {
 		this.validBefore = undefined;
 		const paths = this.paths;

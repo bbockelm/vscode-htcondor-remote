@@ -31,6 +31,8 @@ function vscodeStub(): Record<string, unknown> {
 		ProgressLocation: { Notification: 15 },
 		TreeItem: class {},
 		TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
+		StatusBarAlignment: { Left: 1, Right: 2 },
+		QuickPickItemKind: { Separator: -1, Default: 0 },
 		window: {
 			createOutputChannel: () => ({ ...disposable, info: noop, warn: noop, append: noop, show: noop }),
 			registerTreeDataProvider: () => disposable,
@@ -38,6 +40,9 @@ function vscodeStub(): Record<string, unknown> {
 			createTreeView: () => ({ ...disposable, message: undefined, onDidChangeVisibility: () => disposable }),
 			showTextDocument: noop,
 			registerFileDecorationProvider: () => disposable,
+			createStatusBarItem: () => ({ ...disposable, show: noop, hide: noop, text: "", tooltip: "", command: "" }),
+			showQuickPick: noop,
+			showInputBox: noop,
 			showInformationMessage: noop,
 			showErrorMessage: noop,
 			showWarningMessage: noop,
@@ -63,6 +68,7 @@ function contextStub(): Record<string, unknown> {
 		subscriptions: [] as unknown[],
 		secrets: { get: async () => undefined, store: noop, delete: noop, onDidChange: noop },
 		globalStorageUri: { fsPath: "/tmp/htcondor-test" },
+		globalState: { get: () => undefined, update: async () => undefined },
 		extension: { packageJSON: { version: "9.9.9" } },
 	};
 }

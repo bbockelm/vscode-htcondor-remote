@@ -9,6 +9,7 @@
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { accessPointSlug } from "./accessPoints";
 
 /** Where to reach a job. */
 export interface HostSpec {
@@ -194,4 +195,19 @@ function renderHost(host: HostSpec, knownHostsFile: string, identity: Identity):
  */
 function quote(path: string): string {
 	return `"${path.replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * A stable, filesystem-safe Host alias for a target.
+ *
+ * The access point is in the name because the alias is what the
+ * generated ssh_config keys on and what Remote-SSH remembers. Job
+ * 12345.0 exists on more than one access point, and two of them under
+ * one alias would be one host that means different things depending on
+ * when you opened it.
+ */
+export function aliasFor(accessPoint: string, target: string): string {
+	const cleaned = target.replace(/[^A-Za-z0-9._+-]/g, "");
+	const where = accessPointSlug(accessPoint);
+	return `condor-${where === "" ? "" : `${where}-`}${cleaned === "" ? "default" : cleaned}`;
 }

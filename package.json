@@ -33,10 +33,20 @@
     "configuration": {
       "title": "HTCondor",
       "properties": {
+        "htcondor.accessPoints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "The HTCondor access points you use, as addresses such as `https://ap.example.edu`. Pick the one a window talks to from the status bar, or with **HTCondor: Switch Access Point**."
+        },
         "htcondor.serverUrl": {
           "type": "string",
           "default": "",
-          "description": "Base URL of the HTCondor API server, e.g. https://ap.example.edu"
+          "description": "Base URL of the HTCondor API server, e.g. https://ap.example.edu",
+          "markdownDeprecationMessage": "Replaced by `#htcondor.accessPoints#`, which holds more than one. Your address was moved there automatically; this setting is no longer read.",
+          "deprecationMessage": "Replaced by htcondor.accessPoints. Your address was moved there automatically."
         },
         "htcondor.sshGateway": {
           "type": "string",
@@ -124,6 +134,23 @@
         "command": "htcondor.showJobDetails",
         "title": "Show Job Details",
         "icon": "$(info)"
+      },
+      {
+        "command": "htcondor.switchAccessPoint",
+        "title": "Switch Access Point",
+        "category": "HTCondor",
+        "icon": "$(server)"
+      },
+      {
+        "command": "htcondor.addAccessPoint",
+        "title": "Add Access Point",
+        "category": "HTCondor",
+        "icon": "$(add)"
+      },
+      {
+        "command": "htcondor.removeAccessPoint",
+        "title": "Remove Access Point",
+        "category": "HTCondor"
       }
     ],
     "authentication": [
@@ -161,6 +188,11 @@
           "command": "htcondor.signOut",
           "when": "view == htcondor.jobs && htcondor.signedIn",
           "group": "overflow@1"
+        },
+        {
+          "command": "htcondor.switchAccessPoint",
+          "when": "view == htcondor.jobs",
+          "group": "navigation@9"
         }
       ],
       "view/item/context": [
@@ -214,7 +246,7 @@
       {
         "view": "htcondor.jobs",
         "when": "!htcondor.configured",
-        "contents": "Connect to an HTCondor access point to see your jobs, open a shell in one, or run VS Code inside one.\n[Connect to an access point](command:htcondor.setup)\n"
+        "contents": "Add an HTCondor access point to see your jobs, open a shell in one, or run VS Code inside one.\n[Add an access point](command:htcondor.addAccessPoint)\n"
       },
       {
         "view": "htcondor.jobs",
@@ -230,7 +262,8 @@
   },
   "activationEvents": [
     "onView:htcondor.jobs",
-    "onCommand:htcondor.setup"
+    "onCommand:htcondor.setup",
+    "onCommand:htcondor.addAccessPoint"
   ],
   "dependencies": {
     "ws": "^8.22.0"

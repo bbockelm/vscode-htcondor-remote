@@ -110,6 +110,11 @@ export class HTCondorApi {
 		private readonly trace: (message: string) => void = () => {}
 	) {}
 
+	/** Where this client is pointed, canonical at the moment it is asked. */
+	get accessPoint(): string {
+		return resolveBaseUrl(this.baseUrl);
+	}
+
 	async certificateAuthority(): Promise<SSHCertificateAuthority> {
 		const body = await this.request<{
 			public_key: string;

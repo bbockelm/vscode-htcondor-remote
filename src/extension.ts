@@ -12,7 +12,7 @@ import { HTCondorApi, jobId } from "./api";
 import { discover } from "./oauth2";
 import { PRESETS, describeSpec, isReady, isStuck, parseSize } from "./sessions";
 import { SessionSpec } from "./api";
-import { AUTH_PROVIDER_ID, HTCondorAuthProvider } from "./auth";
+import { AUTH_PROVIDER_ID, CLIENT_SECRET_KEY, HTCondorAuthProvider } from "./auth";
 import { SCOPES } from "./oauth2";
 import { CertificateManager, CHECK_INTERVAL_MS, KeyStore } from "./certificate";
 import { JobNode } from "./jobsModel";
@@ -24,7 +24,11 @@ import { JobLogs } from "./logsView";
 import { planSubmit, submitWarning } from "./submit";
 import { JobTerminal } from "./terminal";
 import { configureHttp } from "./http";
-import { HostSpec, writeSSHConfig } from "./sshconfig";
+import { accessPointLabel, canonicalAccessPoint, insecureAccessPoint } from "./accessPoints";
+import { ACCESS_POINTS_SETTING, CurrentAccessPoint } from "./currentAccessPoint";
+import { migrateUnscopedSecrets } from "./migrate";
+import { TOKENS_KEY } from "./tokens";
+import { aliasFor, HostSpec, writeSSHConfig } from "./sshconfig";
 
 export function activate(context: vscode.ExtensionContext): void {
 	const output = vscode.window.createOutputChannel("HTCondor", { log: true });
@@ -50,15 +54,10 @@ export function activate(context: vscode.ExtensionContext): void {
 			`, proxy: ${httpConfig.get<string>("proxy", "") || "(none)"}`
 	);
 
-	const serverUrl = (): string => {
-		const configured = vscode.workspace.getConfiguration("htcondor").get<string>("serverUrl", "").trim();
-		if (configured === "") {
-			throw new Error(
-				"Set `htcondor.serverUrl` to your access point, for example https://ap.example.edu"
-			);
-		}
-		return configured;
-	};
+	const current = new CurrentAccessPoint(context.globalState);
+	context.subscriptions.push(current);
+	const serverUrl = (): string => current.require();
+	void adoptLegacySetting(context, current, output);
 
 	const auth = new HTCondorAuthProvider(context.secrets, serverUrl);
 	context.subscriptions.push(
@@ -71,7 +70,13 @@ export function activate(context: vscode.ExtensionContext): void {
 	const api = new HTCondorApi(serverUrl, () => auth.token(), undefined, undefined, (message) =>
 		output.info(message)
 	);
-	const certificates = new CertificateManager(api, secretKeyStore(context), context.globalStorageUri.fsPath);
+	const certificates = new CertificateManager(
+		api,
+		secretKeyStore(context),
+		context.globalStorageUri.fsPath,
+		undefined,
+		() => current.url ?? ""
+	);
 
 	// Renewal runs on a timer as well as on demand. ssh reads the
 	// certificate when it connects, and Remote-SSH reconnects by itself
@@ -135,6 +140,30 @@ export function activate(context: vscode.ExtensionContext): void {
 	void startWatching();
 	context.subscriptions.push(auth.onDidChangeSessions(() => void startWatching()));
 
+	// Everything that holds an access point reads it through a
+	// closure, so a switch is a matter of dropping what was cached for
+	// the old one and asking again.
+	context.subscriptions.push(
+		current.onDidChange((url) => {
+			void (async (): Promise<void> => {
+				output.info(url ? `Access point: ${url}` : "No access point configured");
+				watch.close();
+				if (pollTimer) {
+					clearInterval(pollTimer);
+					pollTimer = undefined;
+				}
+				logs.closeAll();
+				jobs.refresh();
+				await startWatching();
+			})();
+		}),
+		vscode.workspace.onDidChangeConfiguration((event) => {
+			if (event.affectsConfiguration(`htcondor.${ACCESS_POINTS_SETTING}`)) {
+				void current.reconcile();
+			}
+		})
+	);
+
 	const renewal = setInterval(() => {
 		void certificates.ensure().catch((err: unknown) => {
 			// Logged, not shown. A failed background renewal is not
@@ -148,7 +177,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	// The welcome view keys off these, so an unconfigured extension
 	// offers a button instead of an empty tree and a settings hunt.
 	const setContext = async (): Promise<void> => {
-		const configured = vscode.workspace.getConfiguration("htcondor").get<string>("serverUrl", "").trim() !== "";
+		const configured = current.url !== undefined;
 		await vscode.commands.executeCommand("setContext", "htcondor.configured", configured);
 		let signedIn = false;
 		if (configured) {
@@ -160,11 +189,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	void setContext();
 	context.subscriptions.push(
 		auth.onDidChangeSessions(() => void setContext()),
-		vscode.workspace.onDidChangeConfiguration((e) => {
-			if (e.affectsConfiguration("htcondor.serverUrl")) {
-				void setContext();
-			}
-		})
+		current.onDidChange(() => void setContext())
 	);
 
 	const jobs = new JobsProvider(api, output, async () => (await auth.getSessions()).length > 0);
@@ -222,6 +247,13 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 		}),
 		vscode.commands.registerCommand("htcondor.refreshJobs", () => jobs.refresh()),
+		vscode.commands.registerCommand("htcondor.switchAccessPoint", () => switchAccessPoint(current)),
+		vscode.commands.registerCommand("htcondor.addAccessPoint", () =>
+			addAccessPointCommand(current, jobs, output, setContext)
+		),
+		vscode.commands.registerCommand("htcondor.removeAccessPoint", () =>
+			removeAccessPointCommand(current, auth, certificates, output)
+		),
 		vscode.commands.registerCommand("htcondor.signIn", async () => {
 			// force: an explicit click is a new decision, and VS Code
 			// would otherwise honour a remembered Cancel by doing
@@ -244,7 +276,9 @@ export function activate(context: vscode.ExtensionContext): void {
 			void vscode.window.showInformationMessage("Signed out of HTCondor.");
 		}),
 		vscode.commands.registerCommand("htcondor.showExtensionLog", () => output.show(true)),
-		vscode.commands.registerCommand("htcondor.setup", () => setup(jobs, setContext)),
+		vscode.commands.registerCommand("htcondor.setup", () =>
+			addAccessPointCommand(current, jobs, output, setContext)
+		),
 		vscode.commands.registerCommand("htcondor.submit", () => submitActiveEditor(api, jobs, output)),
 		vscode.commands.registerCommand("htcondor.connect", () => connect(api, certificates, output)),
 		// From the panel: the job is already chosen, so there is
@@ -322,7 +356,7 @@ async function connect(
 			const gateway = resolveGateway(ca.gatewayHost, ca.gatewayPort);
 			const paths = await certificates.ensure();
 
-			const alias = aliasFor(target);
+			const alias = aliasFor(api.accessPoint, target);
 			const host: HostSpec = {
 				alias,
 				gatewayHost: gateway.host,
@@ -409,11 +443,177 @@ function splitHostPort(value: string): [string, number] {
 	return [value, 22];
 }
 
-/** A stable, filesystem-safe Host alias for a target. */
-function aliasFor(target: string): string {
-	const cleaned = target.replace(/[^A-Za-z0-9._+-]/g, "");
-	return `condor-${cleaned === "" ? "default" : cleaned}`;
+/**
+ * Pick an access point, or add one.
+ *
+ * A dropdown rather than a setting because moving between access
+ * points is a thing people do several times a day, and editing JSON
+ * is not. The two housekeeping entries are in the same list so that
+ * the first-run case -- an empty list -- still has something to click.
+ */
+async function switchAccessPoint(current: CurrentAccessPoint): Promise<void> {
+	const ADD = "$(add) Add access point\u2026";
+	const REMOVE = "$(trash) Remove access point\u2026";
+	const configured = current.list();
+
+	const items: vscode.QuickPickItem[] = configured.map((url) => ({
+		label: accessPointLabel(url),
+		...(url === current.url ? { description: "$(check) in use" } : {}),
+		detail: url,
+	}));
+	if (items.length > 0) {
+		items.push({ label: "", kind: vscode.QuickPickItemKind.Separator });
+	}
+	items.push({ label: ADD }, ...(configured.length > 0 ? [{ label: REMOVE }] : []));
+
+	const picked = await vscode.window.showQuickPick(items, {
+		title: "HTCondor access point",
+		placeHolder: configured.length > 0 ? "Which access point?" : "No access points yet",
+	});
+	if (!picked) {
+		return;
+	}
+	if (picked.label === ADD) {
+		await vscode.commands.executeCommand("htcondor.addAccessPoint");
+		return;
+	}
+	if (picked.label === REMOVE) {
+		await vscode.commands.executeCommand("htcondor.removeAccessPoint");
+		return;
+	}
+	if (picked.detail) {
+		await current.use(picked.detail);
+	}
 }
+
+async function addAccessPointCommand(
+	current: CurrentAccessPoint,
+	jobs: JobsProvider,
+	output: vscode.LogOutputChannel,
+	refreshContext: () => Promise<void>
+): Promise<void> {
+	const entered = await vscode.window.showInputBox({
+		title: "Add an HTCondor access point",
+		prompt: "The address of your access point's web interface.",
+		placeHolder: "ap.example.edu",
+		ignoreFocusOut: true,
+		// Validated as typed, because the address becomes the key
+		// everything for this access point is stored under: a typo
+		// accepted here is a second, empty account.
+		validateInput: (value: string): string | undefined => {
+			if (value.trim() === "") {
+				return "An address is required.";
+			}
+			try {
+				return insecureAccessPoint(canonicalAccessPoint(value));
+			} catch (err: unknown) {
+				return describe(err);
+			}
+		},
+	});
+	if (entered === undefined || entered.trim() === "") {
+		return;
+	}
+
+	let url: string;
+	try {
+		url = canonicalAccessPoint(entered);
+	} catch (err: unknown) {
+		void vscode.window.showErrorMessage(describe(err));
+		return;
+	}
+
+	// Checked before it is saved, so a typo is caught here rather than
+	// surfacing later as an unrelated-looking failure to sign in.
+	try {
+		await vscode.window.withProgress(
+			{ location: vscode.ProgressLocation.Notification, title: "Checking the access point" },
+			() => discover(url)
+		);
+	} catch (err: unknown) {
+		const answer = await vscode.window.showWarningMessage(describe(err), "Add anyway", "Cancel");
+		if (answer !== "Add anyway") {
+			return;
+		}
+	}
+
+	await current.add(url);
+	output.info(`Added access point ${url}`);
+	await refreshContext();
+
+	// Straight into the sign-in: wanting the address saved and not
+	// wanting to sign in is not a real case, and leaving them to find
+	// the command themselves is the problem this is fixing.
+	if (!(await ensureSession())) {
+		return;
+	}
+	await refreshContext();
+	jobs.refresh();
+}
+
+async function removeAccessPointCommand(
+	current: CurrentAccessPoint,
+	auth: HTCondorAuthProvider,
+	certificates: CertificateManager,
+	output: vscode.LogOutputChannel
+): Promise<void> {
+	const configured = current.list();
+	if (configured.length === 0) {
+		void vscode.window.showInformationMessage("There are no HTCondor access points to remove.");
+		return;
+	}
+	const picked = await vscode.window.showQuickPick(
+		configured.map((url) => ({ label: accessPointLabel(url), detail: url })),
+		{ title: "Remove an HTCondor access point", placeHolder: "Which one?" }
+	);
+	if (!picked?.detail) {
+		return;
+	}
+
+	// Its credentials go with it. A token and an SSH key left behind
+	// for an access point the user has said they are done with are a
+	// credential nobody is going to think to retire.
+	await auth.forget(picked.detail);
+	await certificates.forgetFor(picked.detail);
+	await current.remove(picked.detail);
+	output.info(`Removed access point ${picked.detail} and its stored credentials`);
+	void vscode.window.showInformationMessage(`Removed ${accessPointLabel(picked.detail)}.`);
+}
+
+/**
+ * Carry a `htcondor.serverUrl` install into the list, once.
+ *
+ * Guarded by a flag rather than by the setting being empty, so that
+ * removing the access point afterwards sticks instead of being undone
+ * on the next window.
+ */
+async function adoptLegacySetting(
+	context: vscode.ExtensionContext,
+	current: CurrentAccessPoint,
+	output: vscode.LogOutputChannel
+): Promise<void> {
+	const DONE = "htcondor.migratedServerUrl";
+	if (context.globalState.get<boolean>(DONE)) {
+		return;
+	}
+	const legacy = vscode.workspace.getConfiguration("htcondor").get<string>("serverUrl", "").trim();
+	try {
+		if (legacy !== "") {
+			const url = await current.add(legacy);
+			const moved = await migrateUnscopedSecrets(context.secrets, url, [TOKENS_KEY, CLIENT_SECRET_KEY]);
+			output.info(
+				`Adopted htcondor.serverUrl as ${url}` +
+					(moved.length > 0 ? ` and kept you signed in to it` : "")
+			);
+		}
+		await context.globalState.update(DONE, true);
+	} catch (err: unknown) {
+		// A bad legacy value should not stop the extension; the user
+		// can add an access point by hand.
+		output.warn(`Could not adopt htcondor.serverUrl: ${describe(err)}`);
+	}
+}
+
 
 function storageDir(certificates: CertificateManager): string {
 	// The certificate manager already owns this directory; the config
@@ -425,6 +625,7 @@ function secretKeyStore(context: vscode.ExtensionContext): KeyStore {
 	return {
 		get: (key) => Promise.resolve(context.secrets.get(key)),
 		store: (key, value) => Promise.resolve(context.secrets.store(key, value)),
+		delete: (key) => Promise.resolve(context.secrets.delete(key)),
 	};
 }
 
@@ -503,74 +704,6 @@ async function submitActiveEditor(
 	} finally {
 		jobs.refresh();
 	}
-}
-
-/**
- * Point the extension at an access point and sign in, in one go.
- *
- * This exists because the alternative was three separate places: the
- * Settings UI for the URL, the Settings UI again for the gateway, and
- * the command palette for the sign-in -- none of which a new user has
- * any reason to look in. One command, asked for in the view they are
- * already looking at.
- */
-async function setup(jobs: JobsProvider, refreshContext: () => Promise<void>): Promise<void> {
-	const config = vscode.workspace.getConfiguration("htcondor");
-	const url = await vscode.window.showInputBox({
-		title: "Connect to an HTCondor access point",
-		prompt: "The address of your access point's web interface.",
-		placeHolder: "https://ap.example.edu",
-		value: config.get<string>("serverUrl", ""),
-		ignoreFocusOut: true,
-		validateInput: (value) => {
-			const trimmed = value.trim();
-			if (trimmed === "") {
-				return "An address is required.";
-			}
-			try {
-				const parsed = new URL(trimmed);
-				if (parsed.protocol !== "https:" && parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1") {
-					// A bearer token travels on every request, so http
-					// to anywhere but this machine would put it on the
-					// wire in clear.
-					return "Use https, or localhost for a local server.";
-				}
-			} catch {
-				return "That is not a URL. It should look like https://ap.example.edu";
-			}
-			return undefined;
-		},
-	});
-	if (url === undefined) {
-		return;
-	}
-
-	const trimmed = url.trim();
-	// Checked before it is saved, so a typo is caught here rather than
-	// surfacing later as an unrelated-looking failure to sign in.
-	try {
-		await vscode.window.withProgress(
-			{ location: vscode.ProgressLocation.Notification, title: "Checking the access point" },
-			() => discover(trimmed)
-		);
-	} catch (err: unknown) {
-		const answer = await vscode.window.showWarningMessage(describe(err), "Save anyway", "Cancel");
-		if (answer !== "Save anyway") {
-			return;
-		}
-	}
-
-	await config.update("serverUrl", trimmed, vscode.ConfigurationTarget.Global);
-	await refreshContext();
-
-	// Straight into the sign-in: wanting the address saved and not
-	// wanting to sign in is not a real case, and leaving them to find
-	// the command themselves is the problem this is fixing.
-	if (!(await ensureSession())) {
-		return;
-	}
-	await refreshContext();
-	jobs.refresh();
 }
 
 /**

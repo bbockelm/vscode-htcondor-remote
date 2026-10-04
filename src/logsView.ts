@@ -28,6 +28,17 @@ export class JobLogs implements vscode.Disposable {
 	) {}
 
 	dispose(): void {
+		this.closeAll();
+	}
+
+	/**
+	 * Close every open job output.
+	 *
+	 * Called when the window changes access point: each of these polls
+	 * a job id, and the same id on another access point is a different
+	 * job. Left open they would quietly start following it.
+	 */
+	closeAll(): void {
 		for (const { channel, timer } of this.channels.values()) {
 			clearInterval(timer);
 			channel.dispose();

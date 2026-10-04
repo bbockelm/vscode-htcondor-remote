@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
-import { Identity, chainTarget, configPaths, renderConfig, writeSSHConfig } from "../sshconfig";
+import { Identity, aliasFor, chainTarget, configPaths, renderConfig, writeSSHConfig } from "../sshconfig";
 
 let dir: string;
 beforeEach(() => {
@@ -201,4 +201,31 @@ test("its own path is recognised however it is spelled", () => {
 test("someone else's config file is still chained", () => {
 	const ours = join(dir, "ssh_config");
 	assert.equal(chainTarget("/home/me/.ssh/work_config", ours), "/home/me/.ssh/work_config");
+});
+
+test("the Host alias names the access point as well as the job", () => {
+	// The alias is what the generated config keys on and what
+	// Remote-SSH remembers. Job 12345.0 exists on more than one access
+	// point, and two of them under one alias is one host that means
+	// different things depending on when you opened it.
+	const onFirst = aliasFor("https://ap1.example.edu", "12345.0");
+	const onSecond = aliasFor("https://ap2.example.edu", "12345.0");
+
+	assert.notEqual(onFirst, onSecond);
+	assert.match(onFirst, /ap1\.example\.edu/);
+});
+
+test("an alias is safe to write into an ssh config", () => {
+	for (const [ap, target] of [
+		["https://ap.example.edu:8443", "+my session"],
+		["https://ap.example.edu", ""],
+		["https://ap.example.edu", "../../etc/passwd"],
+	]) {
+		const alias = aliasFor(ap, target);
+		assert.match(alias, /^[A-Za-z0-9._+-]+$/, `${alias} is not safe as a Host name`);
+	}
+});
+
+test("the default session still has a name", () => {
+	assert.equal(aliasFor("https://ap.example.edu", ""), "condor-ap.example.edu-default");
 });

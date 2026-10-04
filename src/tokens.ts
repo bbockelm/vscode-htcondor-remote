@@ -21,6 +21,12 @@ export interface StoredTokens {
 	account: string;
 }
 
+/**
+ * The prefix tokens are stored under. One access point's tokens go
+ * under `${TOKENS_KEY}:${its canonical URL}`: they are not
+ * interchangeable, and offering one access point a token another
+ * minted is the mistake a single key invited.
+ */
 export const TOKENS_KEY = "htcondor.oauth2.tokens";
 
 /**
@@ -38,11 +44,13 @@ export class TokenStore {
 	constructor(
 		private readonly secrets: SecretStore,
 		private readonly refresh: (refreshToken: string) => Promise<{ tokens: Tokens; account: string }>,
-		private readonly now: () => number = () => Date.now()
+		private readonly now: () => number = () => Date.now(),
+		/** Which access point's tokens these are. */
+		private readonly key: string = TOKENS_KEY
 	) {}
 
 	async read(): Promise<StoredTokens | undefined> {
-		const raw = await this.secrets.get(TOKENS_KEY);
+		const raw = await this.secrets.get(this.key);
 		if (!raw) {
 			return undefined;
 		}
@@ -69,12 +77,12 @@ export class TokenStore {
 			...(tokens.expiresAt ? { expiresAt: tokens.expiresAt.toISOString() } : {}),
 			account,
 		};
-		await this.secrets.store(TOKENS_KEY, JSON.stringify(stored));
+		await this.secrets.store(this.key, JSON.stringify(stored));
 		return stored;
 	}
 
 	async clear(): Promise<void> {
-		await this.secrets.delete(TOKENS_KEY);
+		await this.secrets.delete(this.key);
 	}
 
 	/**

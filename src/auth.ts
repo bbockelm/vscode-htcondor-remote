@@ -29,24 +29,81 @@ import {
 	SCOPES,
 	sessionCoversScopes,
 } from "./oauth2";
-import { StoredTokens, TokenStore } from "./tokens";
+import { StoredTokens, TOKENS_KEY, TokenStore } from "./tokens";
+import { accessPointLabel, canonicalAccessPoint, sameAccessPoint, scopedKey } from "./accessPoints";
 import { http } from "./http";
 
 export const AUTH_PROVIDER_ID = "htcondor";
-const CLIENT_SECRET_KEY = "htcondor.oauth2.client";
+export const CLIENT_SECRET_KEY = "htcondor.oauth2.client";
 
 export class HTCondorAuthProvider implements vscode.AuthenticationProvider, vscode.Disposable {
 	private readonly changed = new vscode.EventEmitter<vscode.AuthenticationProviderAuthenticationSessionsChangeEvent>();
 	readonly onDidChangeSessions = this.changed.event;
 
 	private discovery: Discovery | undefined;
-	private readonly tokens: TokenStore;
+	/** The access point the three fields above and below belong to. */
+	private accessPoint: string | undefined;
+	private tokens: TokenStore | undefined;
 
 	constructor(
 		private readonly secrets: vscode.SecretStorage,
 		private readonly serverUrl: () => string
-	) {
-		this.tokens = new TokenStore(secrets, (refreshToken) => this.refresh(refreshToken));
+	) {}
+
+	/**
+	 * The access point in force, or undefined when there is none
+	 * configured yet.
+	 *
+	 * Undefined rather than a throw: "no access point" is the state a
+	 * fresh install is in, and the view that says so has to be able to
+	 * ask whether anyone is signed in without raising.
+	 */
+	private current(): string | undefined {
+		try {
+			return canonicalAccessPoint(this.serverUrl());
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * The token store for the access point in force.
+	 *
+	 * Rebuilt when the access point changes, because the tokens are
+	 * stored under it: a token minted by one access point is not a
+	 * credential anywhere else, and sending it would at best fail.
+	 */
+	private store(): TokenStore | undefined {
+		const accessPoint = this.current();
+		if (!accessPoint) {
+			return undefined;
+		}
+		if (accessPoint !== this.accessPoint || !this.tokens) {
+			this.accessPoint = accessPoint;
+			this.discovery = undefined;
+			this.tokens = new TokenStore(
+				this.secrets,
+				(refreshToken) => this.refresh(refreshToken),
+				undefined,
+				scopedKey(TOKENS_KEY, accessPoint)
+			);
+		}
+		return this.tokens;
+	}
+
+	/**
+	 * Tell the provider the window has moved to another access point.
+	 *
+	 * `previous` is what getSessions answered before the move, which
+	 * is the only way to name what was removed once the move has
+	 * happened.
+	 */
+	async accessPointChanged(previous: readonly vscode.AuthenticationSession[]): Promise<void> {
+		this.accessPoint = undefined;
+		this.tokens = undefined;
+		this.discovery = undefined;
+		const added = await this.getSessions(SCOPES);
+		this.changed.fire({ added, removed: [...previous], changed: [] });
 	}
 
 	dispose(): void {
@@ -65,7 +122,11 @@ export class HTCondorAuthProvider implements vscode.AuthenticationProvider, vsco
 	 * against a grant that could not serve them.
 	 */
 	async getSessions(scopes?: readonly string[]): Promise<vscode.AuthenticationSession[]> {
-		const stored = await this.tokens.read();
+		const store = this.store();
+		if (!store) {
+			return [];
+		}
+		const stored = await store.read();
 		if (!stored) {
 			return [];
 		}
@@ -94,9 +155,30 @@ export class HTCondorAuthProvider implements vscode.AuthenticationProvider, vsco
 		await this.removeSession(AUTH_PROVIDER_ID);
 	}
 
+	/**
+	 * Drop everything stored for an access point.
+	 *
+	 * For an access point being removed, which may not be the one in
+	 * force -- so it works from the keys rather than from the current
+	 * store.
+	 */
+	async forget(accessPoint: string): Promise<void> {
+		await this.secrets.delete(scopedKey(TOKENS_KEY, accessPoint));
+		await this.secrets.delete(scopedKey(CLIENT_SECRET_KEY, accessPoint));
+		if (this.accessPoint && sameAccessPoint(this.accessPoint, accessPoint)) {
+			this.tokens = undefined;
+			this.accessPoint = undefined;
+			this.discovery = undefined;
+		}
+	}
+
 	async removeSession(_sessionId: string): Promise<void> {
-		const stored = await this.tokens.read();
-		await this.tokens.clear();
+		const store = this.store();
+		if (!store) {
+			return;
+		}
+		const stored = await store.read();
+		await store.clear();
 		if (stored) {
 			this.changed.fire({ added: [], removed: [this.toSession(stored)], changed: [] });
 		}
@@ -110,15 +192,16 @@ export class HTCondorAuthProvider implements vscode.AuthenticationProvider, vsco
 	 * concurrent callers.
 	 */
 	async token(): Promise<string> {
-		const before = await this.tokens.read();
+		const store = this.requireStore();
+		const before = await store.read();
 		try {
-			return await this.tokens.token();
+			return await store.token();
 		} catch (err: unknown) {
 			// The store clears a grant that cannot be refreshed. Saying
 			// so here is what turns a dead session into a visible one:
 			// the accounts menu drops it, and the view flips to "Sign
 			// in" instead of looking signed in and failing everything.
-			if (before && !(await this.tokens.read())) {
+			if (before && !(await store.read())) {
 				this.changed.fire({ added: [], removed: [this.toSession(before)], changed: [] });
 			}
 			throw err;
@@ -159,7 +242,7 @@ export class HTCondorAuthProvider implements vscode.AuthenticationProvider, vsco
 
 			const exchanged = await exchangeCode(discovery, client, code, verifier, redirect.uri);
 			const account = await this.accountName(exchanged.accessToken);
-			return this.toSession(await this.tokens.write(exchanged, account));
+			return this.toSession(await this.requireStore().write(exchanged, account));
 		} finally {
 			redirect.close();
 		}
@@ -187,12 +270,28 @@ export class HTCondorAuthProvider implements vscode.AuthenticationProvider, vsco
 	}
 
 	private async resolveDiscovery(): Promise<Discovery> {
+		// Through store(), so that a changed access point drops the
+		// cached document before it is read rather than after.
+		this.requireStore();
 		this.discovery ??= await discover(this.serverUrl());
 		return this.discovery;
 	}
 
+	/** The token store, or a message naming what the user has to do. */
+	private requireStore(): TokenStore {
+		const store = this.store();
+		if (!store) {
+			throw new Error("Add an access point first: run \u201cHTCondor: Add Access Point\u201d.");
+		}
+		return store;
+	}
+
 	private async client(discovery: Discovery): Promise<ClientCredentials> {
-		const raw = await this.secrets.get(CLIENT_SECRET_KEY);
+		// Scoped, because a client registration is issued by one
+		// access point's authorization server and means nothing to
+		// another's.
+		const key = scopedKey(CLIENT_SECRET_KEY, this.accessPoint ?? this.serverUrl());
+		const raw = await this.secrets.get(key);
 		if (raw) {
 			const stored = JSON.parse(raw) as ClientCredentials;
 			// A registration that does not cover what this version asks
@@ -205,17 +304,24 @@ export class HTCondorAuthProvider implements vscode.AuthenticationProvider, vsco
 			}
 		}
 		const credentials = await register(discovery);
-		await this.secrets.store(CLIENT_SECRET_KEY, JSON.stringify(credentials));
+		await this.secrets.store(key, JSON.stringify(credentials));
 		return credentials;
 	}
 
 	private toSession(stored: StoredTokens): vscode.AuthenticationSession {
+		// The access point is part of the identity. Two accounts with
+		// the same name on two access points are two accounts, and the
+		// editor's accounts menu is where a user checks which one they
+		// are using.
+		const where = this.accessPoint ? accessPointLabel(this.accessPoint) : "";
+		const name = where === "" ? stored.account : `${stored.account}@${where}`;
 		return {
-			// Stable, so VS Code treats a refreshed token as the same
-			// session rather than a new account appearing each time.
-			id: AUTH_PROVIDER_ID,
+			// Stable per access point, so VS Code treats a refreshed
+			// token as the same session rather than a new account
+			// appearing each time.
+			id: this.accessPoint ? `${AUTH_PROVIDER_ID}:${this.accessPoint}` : AUTH_PROVIDER_ID,
 			accessToken: stored.accessToken,
-			account: { id: stored.account, label: stored.account },
+			account: { id: name, label: name },
 			scopes: SCOPES,
 		};
 	}
