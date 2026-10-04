@@ -55,6 +55,13 @@ export function resolveBaseUrl(base: BaseUrl): string {
 	return typeof base === "string" ? base : base();
 }
 
+/** Where one request's time went. */
+export interface RequestTimings {
+	sentAt: number;
+	tokenMs: number;
+	waitMs: number;
+}
+
 /** What POST /api/v1/jobs/{id}/warm answers. */
 export interface WarmResult {
 	ready: boolean;
@@ -126,7 +133,10 @@ export class HTCondorApi {
 		private readonly timeoutMs: number = REQUEST_TIMEOUT_MS,
 		// Not a vscode.LogOutputChannel: this module has no editor in
 		// it and should stay that way.
-		private readonly trace: (message: string) => void = () => {},
+		// The timings are passed alongside the line so a caller can
+		// add what only it knows -- how much of the wait the editor
+		// spent unable to run -- without parsing the line back.
+		private readonly trace: (message: string, timings: RequestTimings) => void = () => {},
 		/**
 		 * Called when a request has been outstanding this long without
 		 * an answer, once per client.
@@ -448,7 +458,7 @@ export class HTCondorApi {
 			if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
 				const waited = Date.now() - sentAt;
 				this.answered = true;
-				this.trace(timing(method, path, tokenMs, waited, "gave up", sentAt));
+				this.trace(timing(method, path, tokenMs, waited, "gave up", sentAt), { sentAt, tokenMs, waitMs: waited });
 				// The split is in the message, not only in the log,
 				// because this message is what gets read and reported
 				// -- and "getting a token" and "waiting for the access
@@ -461,7 +471,12 @@ export class HTCondorApi {
 				);
 			}
 			this.answered = true;
-			this.trace(timing(method, path, tokenMs, Date.now() - sentAt, "failed", sentAt));
+			const failedAfter = Date.now() - sentAt;
+			this.trace(timing(method, path, tokenMs, failedAfter, "failed", sentAt), {
+				sentAt,
+				tokenMs,
+				waitMs: failedAfter,
+			});
 			throw err;
 		}
 		clearTimeout(watchdog);
@@ -469,7 +484,11 @@ export class HTCondorApi {
 		const first = !this.answered;
 		this.answered = true;
 		if (first || tokenMs + waitMs >= SLOW_REQUEST_MS) {
-			this.trace(timing(method, path, tokenMs, waitMs, String(response.status), sentAt));
+			this.trace(timing(method, path, tokenMs, waitMs, String(response.status), sentAt), {
+				sentAt,
+				tokenMs,
+				waitMs,
+			});
 		}
 
 		const text = await response.text();

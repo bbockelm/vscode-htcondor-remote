@@ -26,11 +26,24 @@ import { JobTerminal } from "./terminal";
 import { describeWarm, WARM_TIMEOUT_MS, warmTarget } from "./warmup";
 import { configureHttp, http, userAgent } from "./http";
 import { compare, describeTimings, directGet, fetchGet } from "./probe";
+import { explainBlocking, LoopLag } from "./eventLoop";
 import { accessPointLabel, canonicalAccessPoint, insecureAccessPoint } from "./accessPoints";
 import { ACCESS_POINTS_SETTING, CurrentAccessPoint } from "./currentAccessPoint";
 import { migrateUnscopedSecrets } from "./migrate";
 import { TOKENS_KEY } from "./tokens";
 import { aliasFor, HostSpec, writeSSHConfig } from "./sshconfig";
+
+/** How often to check that the extension host is still running. */
+const LAG_INTERVAL_MS = 250;
+
+/**
+ * How long to keep checking.
+ *
+ * Two minutes: the stall being chased happens in the first moments of
+ * a window, and a timer that runs for the life of the editor to
+ * answer a question already answered is waste.
+ */
+const LAG_WATCH_MS = 120_000;
 
 export function activate(context: vscode.ExtensionContext): void {
 	const output = vscode.window.createOutputChannel("HTCondor", { log: true });
@@ -72,6 +85,25 @@ export function activate(context: vscode.ExtensionContext): void {
 	 * Nothing happens in the ordinary case: this is only armed while a
 	 * request is already late.
 	 */
+	// Watch the extension host's own responsiveness. A promise cannot
+	// resolve while the thread is blocked, so from in here a request
+	// that came back quickly and one that took twenty seconds look
+	// identical -- unless something is keeping time.
+	const lag = new LoopLag(LAG_INTERVAL_MS);
+	const lagTimer = setInterval(() => lag.tick(Date.now()), LAG_INTERVAL_MS);
+	lagTimer.unref?.();
+	// Only for as long as the question is open. The stall happens in
+	// the first moments of a window, and a timer running for the life
+	// of the editor to answer a question already answered is waste.
+	const lagStop = setTimeout(() => clearInterval(lagTimer), LAG_WATCH_MS);
+	lagStop.unref?.();
+	context.subscriptions.push({
+		dispose: () => {
+			clearInterval(lagTimer);
+			clearTimeout(lagStop);
+		},
+	});
+
 	const stillWaiting = (method: string, path: string, waitedMs: number): void => {
 		void (async (): Promise<void> => {
 			const accessPoint = current.url;
@@ -122,7 +154,18 @@ export function activate(context: vscode.ExtensionContext): void {
 		() => auth.token(),
 		undefined,
 		undefined,
-		(message) => output.info(message),
+		(message, timings) => {
+			output.info(message);
+			const finishedAt = timings.sentAt + timings.waitMs;
+			const verdict = explainBlocking(
+				timings.waitMs,
+				lag.blockedBetween(timings.sentAt, finishedAt),
+				lag.worstBetween(timings.sentAt, finishedAt)
+			);
+			if (verdict) {
+				output.warn(verdict);
+			}
+		},
 		stillWaiting
 	);
 	const certificates = new CertificateManager(
