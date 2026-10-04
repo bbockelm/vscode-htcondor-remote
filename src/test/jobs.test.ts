@@ -274,27 +274,25 @@ test("the access point can be supplied as a function, read at request time", asy
 	assert.deepEqual(seen, ["https://first.example.edu", "https://second.example.edu"]);
 });
 
-test("a slow request accounts for where its time went", async () => {
+test("the first request is always accounted for, later quick ones are not", async () => {
+	// The first request of a window is the slow one, and it is slow
+	// whether or not anything else is. A line that only appears once
+	// things are already wrong gives nothing to compare against.
 	const lines: string[] = [];
 	const api = new HTCondorApi(
 		"https://ap.example.edu",
-		async () => {
-			await new Promise((resolve) => setTimeout(resolve, 30));
-			return "t";
-		},
-		async () => {
-			await new Promise((resolve) => setTimeout(resolve, 30));
-			return new Response(JSON.stringify({ jobs: [] }));
-		},
+		async () => "t",
+		async () => new Response(JSON.stringify({ jobs: [] })),
 		undefined,
 		(message) => lines.push(message)
 	);
 
 	await api.listJobs();
+	assert.equal(lines.length, 1, "the first request should be measured whatever it cost");
+	assert.match(lines[0], /sent at \d{4}-\d{2}-\d{2}T/, "without a send time there is nothing to line up the server log with");
 
-	// The stall users hit never reaches the access point's log, so this
-	// side has to say which half of the wait it was.
-	assert.equal(lines.length, 0, "a request under the slow threshold is not worth a line");
+	await api.listJobs();
+	assert.equal(lines.length, 1, "a quick request after the first is not worth a line");
 });
 
 test("a request that times out says how long each part took", async () => {

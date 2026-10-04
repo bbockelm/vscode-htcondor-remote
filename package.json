@@ -151,6 +151,11 @@
         "command": "htcondor.removeAccessPoint",
         "title": "Remove Access Point",
         "category": "HTCondor"
+      },
+      {
+        "command": "htcondor.diagnoseConnection",
+        "title": "Check Connection Speed",
+        "category": "HTCondor"
       }
     ],
     "authentication": [

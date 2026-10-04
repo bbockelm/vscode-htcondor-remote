@@ -120,6 +120,17 @@ export class HTCondorApi {
 		private readonly trace: (message: string) => void = () => {}
 	) {}
 
+	/**
+	 * Whether a request has completed yet.
+	 *
+	 * The first one in a window is the one that is slow, and it is
+	 * slow whether or not anything else is. Logging it unconditionally
+	 * means there is always a measurement to compare the rest against,
+	 * rather than a line that only appears once things are already
+	 * wrong.
+	 */
+	private answered = false;
+
 	/** Where this client is pointed, canonical at the moment it is asked. */
 	get accessPoint(): string {
 		return resolveBaseUrl(this.baseUrl);
@@ -400,7 +411,8 @@ export class HTCondorApi {
 			// what was being waited for.
 			if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
 				const waited = Date.now() - sentAt;
-				this.trace(timing(method, path, tokenMs, waited, "gave up"));
+				this.answered = true;
+				this.trace(timing(method, path, tokenMs, waited, "gave up", sentAt));
 				// The split is in the message, not only in the log,
 				// because this message is what gets read and reported
 				// -- and "getting a token" and "waiting for the access
@@ -412,12 +424,15 @@ export class HTCondorApi {
 						`(${method} ${path}; ${tokenMs}ms getting a token, ${waited}ms waiting)`
 				);
 			}
-			this.trace(timing(method, path, tokenMs, Date.now() - sentAt, "failed"));
+			this.answered = true;
+			this.trace(timing(method, path, tokenMs, Date.now() - sentAt, "failed", sentAt));
 			throw err;
 		}
 		const waitMs = Date.now() - sentAt;
-		if (tokenMs + waitMs >= SLOW_REQUEST_MS) {
-			this.trace(timing(method, path, tokenMs, waitMs, String(response.status)));
+		const first = !this.answered;
+		this.answered = true;
+		if (first || tokenMs + waitMs >= SLOW_REQUEST_MS) {
+			this.trace(timing(method, path, tokenMs, waitMs, String(response.status), sentAt));
 		}
 
 		const text = await response.text();
@@ -438,9 +453,29 @@ export class HTCondorApi {
 	}
 }
 
-/** One line accounting for where a request's time went. */
-function timing(method: string, path: string, tokenMs: number, waitMs: number, outcome: string): string {
-	return `${method} ${path}: ${outcome} after ${tokenMs}ms getting a token and ${waitMs}ms waiting for the access point`;
+/**
+ * One line accounting for where a request's time went.
+ *
+ * `sentAt` is in it so the line can be put beside the access point's
+ * own log. That comparison is the one that settles where a slow
+ * request was slow: if the server recorded it arriving at this time
+ * and answering 25 seconds later, the time was spent there; if it
+ * recorded it arriving 25 seconds after this time, the request had
+ * not left the editor yet.
+ */
+function timing(
+	method: string,
+	path: string,
+	tokenMs: number,
+	waitMs: number,
+	outcome: string,
+	sentAt: number
+): string {
+	const clock = new Date(sentAt).toISOString();
+	return (
+		`${method} ${path}: ${outcome} after ${tokenMs}ms getting a token ` +
+		`and ${waitMs}ms waiting for the access point (sent at ${clock})`
+	);
 }
 
 /**

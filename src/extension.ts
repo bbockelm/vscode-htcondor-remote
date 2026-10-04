@@ -24,12 +24,22 @@ import { JobLogs } from "./logsView";
 import { planSubmit, submitWarning } from "./submit";
 import { JobTerminal } from "./terminal";
 import { describeWarm, WARM_TIMEOUT_MS, warmTarget } from "./warmup";
-import { configureHttp } from "./http";
+import { configureHttp, http, userAgent } from "./http";
+import { compare, describeTimings, directGet, fetchGet } from "./probe";
 import { accessPointLabel, canonicalAccessPoint, insecureAccessPoint } from "./accessPoints";
 import { ACCESS_POINTS_SETTING, CurrentAccessPoint } from "./currentAccessPoint";
 import { migrateUnscopedSecrets } from "./migrate";
 import { TOKENS_KEY } from "./tokens";
 import { aliasFor, HostSpec, writeSSHConfig } from "./sshconfig";
+
+/**
+ * Above this, a first request is worth explaining rather than only
+ * recording.
+ *
+ * Five seconds: a queue listing across a continent is well under it,
+ * and the thing being diagnosed is twenty-five.
+ */
+const SLOW_FIRST_REQUEST_MS = 5_000;
 
 export function activate(context: vscode.ExtensionContext): void {
 	const output = vscode.window.createOutputChannel("HTCondor", { log: true });
@@ -50,10 +60,31 @@ export function activate(context: vscode.ExtensionContext): void {
 	// easily explained there, and the setting is the first thing to
 	// know when one does.
 	const httpConfig = vscode.workspace.getConfiguration("http");
-	output.info(
-		`Proxy support: ${httpConfig.get<string>("proxySupport", "override")}` +
-			`, proxy: ${httpConfig.get<string>("proxy", "") || "(none)"}`
-	);
+	const proxySupport = httpConfig.get<string>("proxySupport", "override");
+	output.info(`Proxy support: ${proxySupport}, proxy: ${httpConfig.get<string>("proxy", "") || "(none)"}`);
+
+	// The first request of a window has been seen to take twenty-five
+	// seconds and then succeed, while the same request from a shell on
+	// the same machine answers in under a second. Both ends of that
+	// are worth naming once it happens, because the two candidates
+	// have different owners and the user can rule one out in a minute.
+	let saidWhyItMightBeSlow = false;
+	const explainIfSlow = (message: string): void => {
+		output.info(message);
+		const waited = /and (\d+)ms waiting/.exec(message);
+		if (saidWhyItMightBeSlow || !waited || Number(waited[1]) < SLOW_FIRST_REQUEST_MS) {
+			return;
+		}
+		saidWhyItMightBeSlow = true;
+		output.warn(
+			`That first request took ${Math.round(Number(waited[1]) / 1000)}s. If the same request from a ` +
+				`terminal on this machine is quick, the time was not spent at the access point: ` +
+				(proxySupport === "override"
+					? "try setting `http.proxySupport` to `off` and reloading -- the editor substitutes its " +
+						"own HTTP stack for extensions, and initialising it is paid for by the first request."
+					: "compare the send time above with when the access point's log records the request arriving.")
+		);
+	};
 
 	const current = new CurrentAccessPoint(context.globalState);
 	context.subscriptions.push(current);
@@ -68,9 +99,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		})
 	);
 
-	const api = new HTCondorApi(serverUrl, () => auth.token(), undefined, undefined, (message) =>
-		output.info(message)
-	);
+	const api = new HTCondorApi(serverUrl, () => auth.token(), undefined, undefined, explainIfSlow);
 	const certificates = new CertificateManager(
 		api,
 		secretKeyStore(context),
@@ -291,6 +320,9 @@ export function activate(context: vscode.ExtensionContext): void {
 		}),
 		vscode.commands.registerCommand("htcondor.refreshJobs", () => jobs.refresh()),
 		vscode.commands.registerCommand("htcondor.switchAccessPoint", () => switchAccessPoint(current)),
+		vscode.commands.registerCommand("htcondor.diagnoseConnection", () =>
+			diagnoseConnection(current, proxySupport, output)
+		),
 		vscode.commands.registerCommand("htcondor.addAccessPoint", () =>
 			addAccessPointCommand(current, jobs, output, setContext)
 		),
@@ -505,6 +537,48 @@ function splitHostPort(value: string): [string, number] {
 		return [value.slice(0, at), Number(value.slice(at + 1))];
 	}
 	return [value, 22];
+}
+
+/**
+ * Time the same request through the editor and around it.
+ *
+ * Built because a first request was taking twenty-five seconds and
+ * then succeeding, the access point's own log showed nothing over
+ * half a second, and the same request from a shell was immediate.
+ * That leaves the editor's HTTP stack, and this measures it rather
+ * than asking the user to change a setting and see.
+ */
+async function diagnoseConnection(
+	current: CurrentAccessPoint,
+	proxySupport: string,
+	output: vscode.LogOutputChannel
+): Promise<void> {
+	const accessPoint = current.url;
+	if (!accessPoint) {
+		void vscode.window.showInformationMessage("Add an HTCondor access point first.");
+		return;
+	}
+	// Unauthenticated, and the smallest thing the access point
+	// serves: this measures reaching it, and a probe that needed a
+	// token could stall getting one and report that as the access
+	// point being slow.
+	const target = new URL("/.well-known/oauth-authorization-server", accessPoint).toString();
+
+	await vscode.window.withProgress(
+		{ location: vscode.ProgressLocation.Notification, title: "Timing the connection to the access point" },
+		async () => {
+			output.show(true);
+			output.info(`Connection check against ${target}`);
+			// The editor's stack first, while it is as cold as it is
+			// when a window opens -- doing it second would measure a
+			// stack the direct probe had already warmed.
+			const viaFetch = await fetchGet(target, http(), 60_000);
+			output.info(describeTimings("Through the editor's HTTP stack", viaFetch));
+			const direct = await directGet(target, userAgent(), 60_000);
+			output.info(describeTimings("Over a socket this extension opened", direct));
+			output.warn(compare(direct, viaFetch, proxySupport));
+		}
+	);
 }
 
 /**
