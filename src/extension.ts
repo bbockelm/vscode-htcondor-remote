@@ -18,7 +18,7 @@ import { CertificateManager, CHECK_INTERVAL_MS, KeyStore } from "./certificate";
 import { JobNode } from "./jobsModel";
 import { JOB_DETAILS_SCHEME, JobDetailsProvider } from "./jobDetails";
 import { JobsProvider } from "./jobsView";
-import { jobsMessage } from "./jobsStatus";
+import { applyJobsMessage, MessageBar } from "./jobsStatus";
 import { JobWatch } from "./watch";
 import { JobLogs } from "./logsView";
 import { planSubmit, submitWarning } from "./submit";
@@ -132,14 +132,29 @@ export function activate(context: vscode.ExtensionContext): void {
 	});
 	// Only once there is a session to stream with; starting before that
 	// would spend a reconnect cycle on a 401.
+	let watching = false;
 	const startWatching = async (): Promise<void> => {
+		if (watching) {
+			return;
+		}
 		const sessions = await auth.getSessions();
 		if (sessions.length > 0) {
+			watching = true;
 			watch.start();
 		}
 	};
-	void startWatching();
-	context.subscriptions.push(auth.onDidChangeSessions(() => void startWatching()));
+	// Deliberately not started here. The first thing a window should
+	// do is read the queue; following it comes after. See the
+	// onDidChangeState handler below.
+	context.subscriptions.push(
+		auth.onDidChangeSessions(() => {
+			// A new sign-in is a reason to try again, but not a reason
+			// to get ahead of the first listing.
+			if (watching) {
+				void startWatching();
+			}
+		})
+	);
 
 	// Everything that holds an access point reads it through a
 	// closure, so a switch is a matter of dropping what was cached for
@@ -149,6 +164,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			void (async (): Promise<void> => {
 				output.info(url ? `Access point: ${url}` : "No access point configured");
 				watch.close();
+				watching = false;
 				if (pollTimer) {
 					clearInterval(pollTimer);
 					pollTimer = undefined;
@@ -214,18 +230,35 @@ export function activate(context: vscode.ExtensionContext): void {
 		}),
 		vscode.commands.registerCommand("htcondor.openTerminal", async (node?: JobNode) => {
 			if (node?.kind !== "job") {
+				// From the command palette there is no job to act on.
+				// Silence here reads as the command being broken, and
+				// that is how it was reported.
+				void vscode.window.showInformationMessage(
+					"Pick a running job in the HTCondor view, then use the terminal button on it."
+				);
+				output.info("Open a shell: no job was passed, so nothing to open a shell in");
 				return;
 			}
 			if (!(await ensureSession())) {
 				return;
 			}
 			const id = jobId(node.job);
-			vscode.window
-				.createTerminal({
-					name: `HTCondor ${id}`,
-					pty: new JobTerminal(serverUrl(), () => auth.token(), id),
-				})
-				.show();
+			const where = accessPointLabel(serverUrl());
+			// Logged before the terminal exists, so the log says
+			// whether this command ran at all. A terminal that turns
+			// out to be the local shell is either a terminal this did
+			// not create or a pseudoterminal that was discarded, and
+			// those are not the same bug.
+			output.info(`Open a shell: creating a terminal for job ${id} on ${where}`);
+			const terminal = vscode.window.createTerminal({
+				// Named for the job and the access point: a terminal
+				// called "HTCondor" sitting next to a local one is
+				// hard to tell apart at a glance.
+				name: `${id} @ ${where}`,
+				iconPath: new vscode.ThemeIcon("server"),
+				pty: new JobTerminal(serverUrl(), () => auth.token(), id),
+			});
+			terminal.show();
 		}),
 		vscode.commands.registerCommand("htcondor.showLogs", (node?: JobNode) => {
 			if (node?.kind === "job") {
@@ -237,14 +270,23 @@ export function activate(context: vscode.ExtensionContext): void {
 		// is empty, the view has never asked, or asking failed.
 		jobsView,
 		jobs.onDidChangeState((state) => {
-			const message = jobsMessage(state);
-			// Assigned conditionally because the typing forbids
-			// undefined, while clearing the bar is exactly what a
-			// successful load should do.
-			if (message === undefined) {
-				delete (jobsView as { message?: string }).message;
-			} else {
-				jobsView.message = message;
+			// Assigned, never deleted. `message` is an accessor on the
+			// editor's TreeView, and `delete` does not go through a
+			// setter -- it removes the accessor, so the bar kept
+			// saying "Loading jobs..." after the jobs had loaded and
+			// no later message ever reached the view either. The cast
+			// is because the typing forbids undefined, while clearing
+			// the bar is exactly what a successful load should do.
+			applyJobsMessage(jobsView as unknown as MessageBar, state);
+
+			// Follow the queue only once it has been read. Both
+			// requests racing from a cold start is how the first
+			// listing ended up behind the change stream; and if the
+			// access point is slow to authorise the first caller,
+			// going one at a time means one of them pays for it
+			// rather than both.
+			if (state.kind === "loaded") {
+				void startWatching();
 			}
 		}),
 		vscode.commands.registerCommand("htcondor.refreshJobs", () => jobs.refresh()),

@@ -30,6 +30,9 @@ function vscodeStub(): Record<string, unknown> {
 		ConfigurationTarget: { Global: 1 },
 		ProgressLocation: { Notification: 15 },
 		TreeItem: class {},
+		ThemeIcon: class {
+			constructor(public readonly id: string) {}
+		},
 		TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
 		StatusBarAlignment: { Left: 1, Right: 2 },
 		QuickPickItemKind: { Separator: -1, Default: 0 },

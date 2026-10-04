@@ -399,11 +399,17 @@ export class HTCondorApi {
 			// A timeout arrives as an abort, which says nothing about
 			// what was being waited for.
 			if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
-				this.trace(timing(method, path, tokenMs, Date.now() - sentAt, "gave up"));
+				const waited = Date.now() - sentAt;
+				this.trace(timing(method, path, tokenMs, waited, "gave up"));
+				// The split is in the message, not only in the log,
+				// because this message is what gets read and reported
+				// -- and "getting a token" and "waiting for the access
+				// point" are different faults with different owners.
 				throw new ApiError(
 					0,
 					"",
-					`The access point did not answer within ${deadline / 1000}s (${method} ${path})`
+					`The access point did not answer within ${deadline / 1000}s ` +
+						`(${method} ${path}; ${tokenMs}ms getting a token, ${waited}ms waiting)`
 				);
 			}
 			this.trace(timing(method, path, tokenMs, Date.now() - sentAt, "failed"));

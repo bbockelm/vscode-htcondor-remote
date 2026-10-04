@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 
 import { HTCondorApi, describeStatus, jobId, toJobSummary } from "../api";
+import { applyJobsMessage, MessageBar } from "../jobsStatus";
 
 function apiReturning(jobs: unknown[], seen?: { url?: string }): HTCondorApi {
 	const fetchImpl = (async (input: unknown) => {
@@ -316,4 +317,53 @@ test("a request that times out says how long each part took", async () => {
 	assert.match(lines[0], /gave up/);
 	assert.match(lines[0], /getting a token/);
 	assert.match(lines[0], /waiting for the access point/);
+});
+
+/**
+ * A message bar that behaves like the editor's.
+ *
+ * `message` is an accessor on a real TreeView, which is the detail
+ * that mattered: `delete view.message` removes the accessor rather
+ * than calling a setter, so the bar freezes on whatever it last said
+ * and every later message is written to a dead property.
+ */
+function fakeMessageBar(): { shown: () => string | undefined; view: MessageBar } {
+	let current: string | undefined;
+	const view = {} as MessageBar;
+	Object.defineProperty(view, "message", {
+		configurable: true,
+		get: () => current,
+		set: (value: string | undefined) => {
+			current = value;
+		},
+	});
+	return { shown: () => current, view };
+}
+
+test("a successful load clears the message bar", async () => {
+	// The reported symptom: "Loading jobs…" stayed up after the jobs
+	// had loaded.
+	const { shown, view } = fakeMessageBar();
+
+	applyJobsMessage(view, { kind: "loading" });
+	assert.equal(shown(), "Loading jobs…");
+
+	applyJobsMessage(view, { kind: "loaded", count: 3 });
+	assert.equal(shown(), undefined, "the bar still says something after the jobs arrived");
+});
+
+test("the message bar is assigned, never deleted", async () => {
+	// Clearing it with `delete` takes the accessor with it, so the
+	// view stops hearing about anything that happens afterwards.
+	const { shown, view } = fakeMessageBar();
+
+	applyJobsMessage(view, { kind: "loading" });
+	applyJobsMessage(view, { kind: "loaded", count: 0 });
+	applyJobsMessage(view, { kind: "failed", detail: "the access point said no" });
+
+	assert.ok(
+		Object.getOwnPropertyDescriptor(view, "message")?.get,
+		"the accessor is gone, so nothing this view is told will ever be shown again"
+	);
+	assert.match(String(shown()), /the access point said no/);
 });

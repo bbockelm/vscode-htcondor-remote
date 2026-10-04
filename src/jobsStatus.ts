@@ -50,6 +50,30 @@ export function jobsMessage(state: JobsState): string | undefined {
 	}
 }
 
+/**
+ * The slice of vscode.TreeView the message bar needs.
+ *
+ * Written as a property that accepts undefined, because that is what
+ * clearing it is, and because the editor's own typing -- which
+ * forbids it -- is what led to the bar being cleared with `delete`.
+ */
+export interface MessageBar {
+	message: string | undefined;
+}
+
+/**
+ * Put a state's message on the view.
+ *
+ * Always an assignment. `message` is an accessor on the editor's
+ * TreeView, and `delete` does not go through a setter: it removes the
+ * accessor instead, so the bar keeps whatever it last said -- "Loading
+ * jobs…", after the jobs have loaded -- and no later message reaches
+ * the view either.
+ */
+export function applyJobsMessage(view: MessageBar, state: JobsState): void {
+	view.message = jobsMessage(state);
+}
+
 /** Whether the view is showing something it has actually confirmed. */
 export function hasLoaded(state: JobsState): boolean {
 	return state.kind === "loaded";
