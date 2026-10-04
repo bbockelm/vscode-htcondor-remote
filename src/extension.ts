@@ -63,9 +63,20 @@ export function activate(context: vscode.ExtensionContext): void {
 	// half a minute without ever reaching the access point is most
 	// easily explained there, and the setting is the first thing to
 	// know when one does.
+	// All of them, because `proxySupport` is not the only switch and
+	// turning it off did not stop the editor substituting its own
+	// stack. `fetchAdditionalSupport` is the one that patches `fetch`
+	// in particular, and it is on by default and independent.
 	const httpConfig = vscode.workspace.getConfiguration("http");
 	const proxySupport = httpConfig.get<string>("proxySupport", "override");
-	output.info(`Proxy support: ${proxySupport}, proxy: ${httpConfig.get<string>("proxy", "") || "(none)"}`);
+	const httpSettings = [
+		`proxySupport=${proxySupport}`,
+		`proxy=${httpConfig.get<string>("proxy", "") || "(none)"}`,
+		`fetchAdditionalSupport=${httpConfig.get<boolean>("fetchAdditionalSupport", true)}`,
+		`systemCertificates=${httpConfig.get<boolean>("systemCertificates", true)}`,
+		`electronFetch=${httpConfig.get<boolean>("electronFetch", false)}`,
+	];
+	output.info(`Editor HTTP settings: ${httpSettings.join(", ")}`);
 
 	// The first request of a window has been seen to take twenty-five
 	// seconds and then succeed, while the same request from a shell on
@@ -150,8 +161,14 @@ export function activate(context: vscode.ExtensionContext): void {
 			output.warn(
 				`The access point answered the same authenticated request in ${probe.totalMs}ms while the ` +
 					`editor's copy was still waiting. Same URL, same token, same moment, different HTTP ` +
-					`stack -- so it is the editor's \`fetch\`, not the access point. ` +
-					`\`http.proxySupport\` is \`${proxySupport}\`.`
+					`stack -- so it is the editor's \`fetch\`, not the access point.`
+			);
+			output.warn(
+				`Settings worth trying, one at a time, reloading after each: ` +
+					`\`http.fetchAdditionalSupport: false\` (this is the one that patches \`fetch\` itself, ` +
+					`separately from \`http.proxySupport\`, and it is on by default), then ` +
+					`\`http.systemCertificates: false\`, then \`http.electronFetch: true\`. Current values: ` +
+					httpSettings.join(", ")
 			);
 		})();
 	};
