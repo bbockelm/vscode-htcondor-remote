@@ -10,7 +10,7 @@ import { WebSocket } from "ws";
 
 import { TokenSource } from "./api";
 import { userAgent } from "./http";
-import { closeMessage, describeEnd, parseControl, resizeMessage } from "./terminalProtocol";
+import { closeMessage, ControlMessage, describeEnd, parseControl, resizeMessage } from "./terminalProtocol";
 
 export class JobTerminal implements vscode.Pseudoterminal {
 	private readonly writeEmitter = new vscode.EventEmitter<string>();
@@ -21,6 +21,15 @@ export class JobTerminal implements vscode.Pseudoterminal {
 	private socket: WebSocket | undefined;
 	/** Set once the socket is open, so a resize before then is not lost. */
 	private pending: { cols: number; rows: number } | undefined;
+	/**
+	 * Whether the far end has produced any output.
+	 *
+	 * The difference between a shell that ran and one that never
+	 * started. A socket that closes before a single byte of output
+	 * did not give the user a session, whatever it says on the way
+	 * out, and closing the terminal on it hides why.
+	 */
+	private sawOutput = false;
 	/**
 	 * Whether the session has already ended.
 	 *
@@ -117,6 +126,7 @@ export class JobTerminal implements vscode.Pseudoterminal {
 
 		socket.on("message", (data, isBinary) => {
 			if (isBinary) {
+				this.sawOutput = true;
 				this.writeEmitter.fire(data.toString());
 				return;
 			}
@@ -124,13 +134,44 @@ export class JobTerminal implements vscode.Pseudoterminal {
 			if (!message) {
 				return;
 			}
-			if (message.type === "exit" || message.type === "error") {
+			if (message.type === "error") {
+				// The access point upgrades the socket before it tries
+				// to reach the execute node, so that a failure can be
+				// explained over the socket rather than as a status
+				// nobody can read. That explanation arrives here --
+				// and closing the terminal on it threw it away, which
+				// is why this looked like a shell that connected and
+				// vanished.
+				this.failFromServer(message);
+				return;
+			}
+			if (message.type === "exit") {
 				this.writeEmitter.fire(describeEnd(message));
-				this.end(message.code ?? 0);
+				// A clean exit is the user finishing; the terminal
+				// closing with them is right. A non-zero one is
+				// something they will want to read.
+				if ((message.code ?? 0) === 0) {
+					this.end(0);
+				} else {
+					this.ended = true;
+				}
 			}
 		});
 
-		socket.once("close", () => this.end(undefined));
+		socket.once("close", (code: number, reason: Buffer) => {
+			if (this.ended) {
+				return;
+			}
+			if (this.sawOutput) {
+				// A shell ran and the connection ended. Ordinary.
+				this.end(undefined);
+				return;
+			}
+			const detail = reason.toString().trim();
+			this.fail(
+				`the connection closed before a shell started (code ${code}${detail === "" ? "" : `: ${detail}`})`
+			);
+		});
 	}
 
 	private fail(reason: string): void {
@@ -150,6 +191,25 @@ export class JobTerminal implements vscode.Pseudoterminal {
 		this.writeEmitter.fire(
 			`\r\n\x1b[31mCould not open a shell in ${this.jobId}: ${reason}\x1b[0m\r\n` +
 				`\r\nThis terminal is left open so the reason can be read. Close it when done.\r\n`
+		);
+	}
+
+	/**
+	 * Report a failure the access point described over the socket.
+	 *
+	 * Same handling as any other failure -- the terminal stays open --
+	 * but the wording is the server's, which is the one that knows
+	 * whether the job is still starting or the execute node is out of
+	 * reach.
+	 */
+	private failFromServer(message: ControlMessage): void {
+		if (this.ended) {
+			return;
+		}
+		this.ended = true;
+		this.log(`Could not open a shell in ${this.jobId}: ${message.reason ?? message.message ?? "no reason given"}`);
+		this.writeEmitter.fire(
+			describeEnd(message) + `\r\nThis terminal is left open so the reason can be read. Close it when done.\r\n`
 		);
 	}
 

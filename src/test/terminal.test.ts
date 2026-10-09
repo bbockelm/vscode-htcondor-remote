@@ -191,3 +191,65 @@ test("a failure is logged as well as shown, so it survives the terminal", async 
 	assert.equal(logged.length, 1);
 	assert.match(logged[0], /409/);
 });
+
+test("a setup failure reported over the socket leaves the terminal open", async () => {
+	// The access point upgrades the socket before it tries to reach
+	// the execute node, so that a failure can be explained over the
+	// socket rather than as a status nobody can read. Closing the
+	// terminal on that explanation threw it away: the shell appeared
+	// to connect and vanish.
+	const logged: string[] = [];
+	const { closes, written, socket } = openTerminal(logged);
+	await settle();
+
+	socket().emit(
+		"message",
+		Buffer.from(
+			JSON.stringify({
+				type: "error",
+				reason: "could not open shell",
+				message: "Failed to open a shell on the execute node: connection refused",
+			})
+		),
+		false
+	);
+	socket().emit("close", 1008, Buffer.from("could not open shell"));
+
+	assert.deepEqual(closes, [], "the terminal must stay open, or the reason cannot be read");
+	assert.match(written.join(""), /connection refused/);
+	assert.match(logged.join(""), /could not open shell/);
+});
+
+test("a socket that closes before any output is a failure, not an end", async () => {
+	const { closes, written, socket } = openTerminal();
+	await settle();
+
+	socket().emit("close", 1006, Buffer.from(""));
+
+	assert.deepEqual(closes, [], "nothing ran, so there is nothing to have ended");
+	assert.match(written.join(""), /closed before a shell started/);
+	assert.match(written.join(""), /1006/, "the close code is the only clue there is");
+});
+
+test("a shell that ran and then ended closes the terminal", async () => {
+	// The ordinary case must still behave like a terminal.
+	const { closes, socket } = openTerminal();
+	await settle();
+
+	socket().emit("message", Buffer.from("hello from the job\r\n"), true);
+	socket().emit("close", 1000, Buffer.from(""));
+
+	assert.deepEqual(closes, [undefined]);
+});
+
+test("a shell that exits non-zero leaves its status readable", async () => {
+	const { closes, written, socket } = openTerminal();
+	await settle();
+
+	socket().emit("message", Buffer.from("output\r\n"), true);
+	socket().emit("message", Buffer.from(JSON.stringify({ type: "exit", code: 42 })), false);
+	socket().emit("close", 1000, Buffer.from(""));
+
+	assert.deepEqual(closes, [], "a non-zero exit is something the user will want to read");
+	assert.match(written.join(""), /status 42/);
+});
