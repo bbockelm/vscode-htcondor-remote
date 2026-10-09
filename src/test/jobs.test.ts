@@ -372,3 +372,46 @@ test("the message bar is assigned, never deleted", async () => {
 	assert.match(String(shown()), /the access point said no/);
 });
 
+
+test("an error reports what went wrong, not the status spelled out", async () => {
+	// The access point answers {"error": "<the status>", "message":
+	// "<the cause>"}. Preferring `error` reported "Bad Gateway" beside
+	// a 502 and dropped the only sentence that said why.
+	const api = new HTCondorApi(
+		"https://ap.example.edu",
+		async () => "t",
+		async () =>
+			new Response(
+				JSON.stringify({
+					error: "Bad Gateway",
+					message: "schedd submit failed: SECMAN:2007:Failed to end classad message",
+					code: 502,
+				}),
+				{ status: 502 }
+			)
+	);
+
+	await assert.rejects(
+		() => api.createSession(),
+		(err: Error) => {
+			assert.match(err.message, /schedd submit failed/, `got: ${err.message}`);
+			return true;
+		}
+	);
+});
+
+test("a body with only the generic field still says something", async () => {
+	const api = new HTCondorApi(
+		"https://ap.example.edu",
+		async () => "t",
+		async () => new Response(JSON.stringify({ error: "Bad Gateway" }), { status: 502 })
+	);
+
+	await assert.rejects(
+		() => api.createSession(),
+		(err: Error) => {
+			assert.match(err.message, /Bad Gateway/);
+			return true;
+		}
+	);
+});

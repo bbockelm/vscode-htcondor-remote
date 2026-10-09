@@ -478,10 +478,20 @@ function describeFailure(method: string, path: string, status: number, body: str
 }
 
 /** Pull the server's own error text out of a JSON error body, if it is one. */
+/**
+ * The useful half of an error body.
+ *
+ * The access point answers `{"error": "Bad Gateway", "message":
+ * "schedd submit failed: ..."}`: `error` is the HTTP status spelled
+ * out, `message` is what actually went wrong. Reading them in the
+ * other order -- which this did -- reported "Bad Gateway" next to a
+ * 502 and dropped the only sentence that said why, which is no
+ * better than printing the number twice.
+ */
 function serverMessage(body: string): string {
 	try {
 		const parsed = JSON.parse(body) as { error?: unknown; message?: unknown };
-		for (const field of [parsed.error, parsed.message]) {
+		for (const field of [parsed.message, parsed.error]) {
 			if (typeof field === "string" && field.trim() !== "") {
 				return field.trim();
 			}
