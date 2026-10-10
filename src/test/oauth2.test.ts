@@ -373,3 +373,31 @@ test("an empty request matches any session", () => {
 	assert.equal(sessionCoversScopes(["condor:/WRITE"], []), true);
 	assert.equal(sessionCoversScopes([], []), true);
 });
+
+test("both halves of the condor scope are requested", () => {
+	// The access point splits them by method: a GET needs
+	// condor:/READ, a mutation needs condor:/WRITE. They are siblings,
+	// not a hierarchy, so holding one grants nothing under the other.
+	// Asking for WRITE alone produced an extension that could open a
+	// shell but not list the queue.
+	assert.ok(SCOPES.includes("condor:/READ"), "without READ, every GET is refused");
+	assert.ok(SCOPES.includes("condor:/WRITE"), "without WRITE, nothing reaches a job");
+});
+
+test("a session granted the old scopes does not count as signed in", () => {
+	// Which is what drives the re-authorisation: the stored session
+	// predates READ, so the view offers "Sign in" rather than failing
+	// every read against a grant that cannot serve it.
+	const old = ["openid", "condor:/WRITE", "offline_access"];
+
+	assert.equal(sessionCoversScopes(old, SCOPES), false);
+	assert.equal(sessionCoversScopes(SCOPES, SCOPES), true);
+});
+
+test("a registration made for the old scopes is not current", () => {
+	// And this re-registers the client, so the authorize request does
+	// not ask for a scope the registration never covered -- the
+	// failure mode that made `openid` unrefreshable.
+	assert.equal(registrationIsCurrent({ clientId: "c", scopes: ["openid", "condor:/WRITE", "offline_access"] }), false);
+	assert.equal(registrationIsCurrent({ clientId: "c", scopes: [...SCOPES] }), true);
+});

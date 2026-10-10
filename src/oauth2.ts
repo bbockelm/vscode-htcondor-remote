@@ -90,11 +90,21 @@ export interface Tokens {
 /**
  * Scopes the extension asks for.
  *
- * `condor:/WRITE` because that is what reaches a job: the schedd
- * registers GET_JOB_CONNECT_INFO at WRITE, so shell access needs it and
- * an SSH certificate is refused without it. `offline_access` because an
- * editor session lives for days and re-prompting daily is the thing
- * this design exists to avoid.
+ * Both halves of `condor:`, because the access point splits them by
+ * method: a GET needs `condor:/READ`, anything that mutates needs
+ * `condor:/WRITE`, and a route that reaches into a running job needs
+ * WRITE whatever its method. They are siblings, not a hierarchy --
+ * holding WRITE grants nothing under READ -- so a client that asks for
+ * one gets half an extension: shell access and submission work while
+ * listing the queue is refused.
+ *
+ * Asking for WRITE alone did exactly that. It went unnoticed because
+ * nothing enforced the split on this path until the access point began
+ * carrying an OAuth2 grant's scopes into its handlers; before that an
+ * approved-for-less grant looked unscoped and every read was allowed.
+ *
+ * `offline_access` because an editor session lives for days and
+ * re-prompting daily is the thing this design exists to avoid.
  *
  * `openid` is requested because the access point GRANTS it whether or
  * not it was asked for. A grant may not exceed what the client is
@@ -107,7 +117,7 @@ export interface Tokens {
  * Asking for it costs nothing: it names no privilege, and the server
  * was adding it regardless.
  */
-export const SCOPES = ["openid", "condor:/WRITE", "offline_access"];
+export const SCOPES = ["openid", "condor:/READ", "condor:/WRITE", "offline_access"];
 
 /**
  * How long an OAuth2 request may take.
